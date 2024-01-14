@@ -2,7 +2,7 @@
 
 This project is a study of Peter Finzel’s superb two-player head-to-head jump and run dungeon explorer for the Atari line of 8-bit home computers and my attempt to accurately port it to the Commodore 64. 
 
-##Compatibility 
+## Compatibility 
 
 Since some users of RC1 have reported issues that are not actually bugs in the game but related to compatibility with various emulation setups, so let me tell you what I know right now about compatibility:  tl;dr, real machines and VICE 3.7+ work well for me and among my immediate friends and colleagues.
 
@@ -22,7 +22,7 @@ The main issues that are observed will be graphical glitches in or around the st
 
 
 
-##Introduction
+## Introduction
 
 I discovered this game when a friend gifted me an 800XL and I had a blast playing it. I had been thinking of trying a C64 project to build on what little 6510 coding skills I had remaining since the 1980s, and the complexity of the display of the original game seemed like it would be really challenging for me to implement.  However, with all that had been learned by democoders since I last touched a C64 it seemed like it was maybe possible. 
 
