@@ -9,6 +9,9 @@
 //
 //	2023-10-20	labels and minor speedup with internal rtses
 //
+//	2024-11-17	replace absolute access of $db with PlayerIndexIRQ_zp = $eb
+//	2024-12-07	v7 increase player X coord limit in movePlayerRight from $ef to $f4 for wider map in game level 3. (AI gets stuck otherwise)
+//			   decrease player Y coord min in movePlyerUp from $04 to $02, and viewport Y coord min from $01 to $00 (cmp is $01 because bcc)
 //
 //
 //
@@ -21,10 +24,10 @@
 //	p1Ypos16 is offset 2
 //	p1VposV1 is offset 4
 //
-// Pass player index in $db, then 
-//	p1HposV1 is $8060 offset by $db
-//	v1ScrollX is ViewFineScrollBase offset by $db
-//	v1ScrollY is ViewFineScrollBase offset by 2 then by $db
+// Pass player index in PlayerIndexIRQ_zp, then 
+//	p1HposV1 is $8060 offset by PlayerIndexIRQ_zp
+//	v1ScrollX is ViewFineScrollBase offset by PlayerIndexIRQ_zp
+//	v1ScrollY is ViewFineScrollBase offset by 2 then by PlayerIndexIRQ_zp
 //
 //
 //	These routines do not use any of the temp variables in ZP
@@ -47,7 +50,7 @@ movePlayerUp:
 		// check if player Y already at limit
 		ldy #playerY		// offset
 		lda (PlayerCoordBase_zpw),y          
-		cmp #$04
+		cmp #$02		// changed from $04 with v7, could make view2 player sprite timing risky
 		iny			// if lsb > $04, carry is set                     
 		lda (PlayerCoordBase_zpw),y          
 		sbc #$00		// if msb > $00, carry is set.  If carry is clear, the 16-bit value in v1Ypos16 < $0004     
@@ -77,8 +80,8 @@ movePlayerUp:
 		// try to move viewport, first check if at limit
 !view:		ldy #viewY		// view Y is offset 0 from view coordinate base
 		lda (ViewportCoordinateBase_zpw),y          
-		cmp #$02
-		iny			// if lsb > $02, carry is set                     
+		cmp #$01		// changed from $02 with v7, note bcc below makes this the smallest possible value
+		iny			// if lsb > $01, carry is set                     
 		lda (ViewportCoordinateBase_zpw),y          
 		sbc #$00		// if msb > $00, carry is set.  If carry is clear, the 16-bit value in v1Ypos16 < $0002     
 		bcc !vpos+		// branch if no room to move viewport, so try to move sprite in the border region
@@ -197,7 +200,7 @@ movePlayerLeft:
 		sta (PlayerCoordBase_zpw),y		// subtracted 1 from player X coordinate
 
 		// check whether desireable to move sprite 	
-		ldy $db			// offset from p1HposV1
+		ldy PlayerIndexIRQ_zp			// offset from p1HposV1
 		lda p1HposV1,y		// p1HposV1				
 		cmp #$39
 		bcc !view+		// branch if pHpos < inner range		
@@ -225,7 +228,7 @@ movePlayerLeft:
 		rts	//internal jmp !done+		// and exit
 
 		// move sprite hpos
-!vpos:		ldy $db			// offset from p1HposV1 
+!vpos:		ldy PlayerIndexIRQ_zp			// offset from p1HposV1 
 		sec
 		lda p1HposV1,y
 		sbc #1
@@ -240,7 +243,7 @@ movePlayerRight:
 		// check if player X already at limit
 		ldy #playerX		// offset
 		lda (PlayerCoordBase_zpw),y          
-		cmp #$ef
+		cmp #$f4						//was originally $ef, but AI gets stuck on third game level due to wider map
 		iny			// if lsbX > $e6, carry is set                     
 		lda (PlayerCoordBase_zpw),y          
 		sbc #$01		// if msbX > $01, carry is set.  If carry is clear, the 16-bit value in v1Xpos16 < $01e7     
@@ -259,7 +262,7 @@ movePlayerRight:
 		sta (PlayerCoordBase_zpw),y		// added 1 to player X coordinate
 
 		// check whether desireable to move sprite 	
-		ldy $db			// offset from p1HposV1
+		ldy PlayerIndexIRQ_zp			// offset from p1HposV1
 		lda p1HposV1,y		// p1HposV1				
 		cmp #$74
 		bcs !view+		// branch if pHpos >= inner range		
@@ -287,7 +290,7 @@ movePlayerRight:
 		rts	//internal jmp !done+		// and exit
 
 		// move sprite hpos
-!vpos:		ldy $db			// offset from p1HposV1 
+!vpos:		ldy PlayerIndexIRQ_zp			// offset from p1HposV1 
 		clc
 		lda p1HposV1,y
 		adc #1

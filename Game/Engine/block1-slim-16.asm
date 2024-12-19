@@ -37,11 +37,19 @@
 
 		2023-12-21	v11 made score data relocatable with labels L060x etc., veto bat chirp sound when more important sound playing
 
+		2024-11-12	v12 implement new sound architecture, distributed optimization of ldx PlayerIndex_zp
+		2024-11-21	v13 now with virtual stack based sound queue in zeropage. New scheme to stop player(s) and AI from moving after
+				door exited; applies mask inside EXECUTE_PLAYER_AI_MOTION because AI routine running in IRQ can overwrite masking
+			 	attempts done in the block0 inline joystick routine which is outside the IRQ handler.  Retuned TrapAnimLength
+		2024-11-22	v14 sets flag for sounds that should pre-empt
+		2024-12-04	Added WAITBURST #define, will wait for both views to be blit during splat/burst when enemy killed. Removed
+				references to PAUSESOUNDQUEUE
+		2024-12-05	v15 moved sprite strip blanking from block zero to here (!END_MODE_1) for better timing, removed an extra
+				adc #$00 in !COMPLETE_LEVEL; invalidate queued sounds during got door exit
+		2024-12-17	v16 added pause loop checking pauseKey_zp and freeze main game engine, enabled by #define PAUSEKEY
  */
       
                                                            
-
-
 // =================================================================================================================== 
  
  				// I labeled these since I found no references anywhere in the code disassembled
@@ -270,12 +278,13 @@ CHK_TILE_RIGHT:                //jmp !START+
                                beq !PLAY_CHIRP+             
                                jmp !SKIP+                   
                                                          
-!PLAY_CHIRP:                   
-			       lda soundPlaying2_zp	// don't pre-empt a more important sound with bat chirp -RJR add
-			       bne !SKIP+
-			       
-			       lda #$16                     
-                               sta SoundStateHi_zp
+!PLAY_CHIRP:
+#if SLOWCHIRP
+			       lda state_zp		// chirp is too frequent, cut probability in half
+			       bne !SKIP+		
+#endif			       
+			       lda #$16
+			       PUSHSOUNDONQUEUE_X()
                                            
 !SKIP:                         lda tempSubstrate3           
                                cmp tempSubstrate2           
@@ -744,10 +753,16 @@ WEAPON:                        //jmp !START+
                                    
                                lda #$00                     
                                ldx PlayerNum                
-                               sta WeaponState,x            
-                               lda SoundStateLo_zp       
-                               ora #$20                     
-                               sta SoundStateLo_zp
+                               sta WeaponState,x
+                            
+				// handle throw sound; challenging because AI throws constantly
+			       ldy LevelEndFlag		// =1 if at end of level I think
+			       bne !LOAD_SOUND+		// desired logic is pre-empt only when search tune is not playing
+			      
+!LOAD_SOUND:
+			       lda #$06			// throw sound index								// no preempt
+			       sta p1Sound_zp,x		// request reload of sound 								
+
                                       
 !EXIT3:                        rts                          
                                                          
@@ -882,7 +897,8 @@ PROPAGATE_WEAPON:              //jmp !START+
                                sta map3_zpw                   
                                lda map3_zpw+1                      
                                sbc #$00                     
-                               sta map3_zpw+1                      
+                               sta map3_zpw+1   
+                                                  
 !CHECK_FOR_HIT:                ldy #$00                     
                                lda (map3_zpw),y               
                                sta $a0                      
@@ -905,15 +921,23 @@ PROPAGATE_WEAPON:              //jmp !START+
                                                          
 !PLOT_BURST:                   lda #$22                     
                                ldy #$00                     
-                               sta (map3_zpw),y               
+                               sta (map3_zpw),y  
+                                    
+#if WAITBURST                               
+                               lda state_zp		// make burst persist for blit of both views
+!wait:			       cmp state_zp                        
+                               beq !wait-
+#endif                               
+             
+                                       
 !CLEAR_TILE:                   lda #$00                     
-                               ldy #$00                     
+                               ldy #$00          	// not loaded on jmp path          
                                sta (map2_zpw),y               
-                               lda #$00                     
-                               ldx WeaponIdx                
+                               //lda #$00                     
+                               ldx WeaponIdx            // already loaded    
                                sta WeaponDirectionTbl,x     
-                               lda #$0a                     
-                               sta SoundStateHi_zp            
+                               //lda #$0a            	// ignore splat sound for now, too many sounds          
+                               //sta SoundStateHi_zp            
                                rts			//internal jmp !EXIT+                   
                                                          
 !NO_ENEMY_HIT:                 ldy #$00                     
@@ -940,7 +964,7 @@ PROPAGATE_WEAPON:              //jmp !START+
 !WEAPON_DEAD:                  lda #$00                     
                                //ldx WeaponIdx                
                                sta WeaponDirectionTbl,x     
-                               lda #$00                     
+                               //lda #$00                     
                                sta (map2_zpw),y               
 !TO_EXIT:                      rts			//internal jmp !EXIT+                   
                                                          
@@ -1746,7 +1770,7 @@ INFLICT_DAMAGE_OR_KILL:        //jmp !START+
                                jmp !SUBTRACT_LIFE+          
                                                          
 !DEAD:                         lda #$00                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                sta PlayerLifeForce,x              
                                //ldx PlayerIndex_zp			     
                                lda ZombieDelay,x            
@@ -1754,15 +1778,15 @@ INFLICT_DAMAGE_OR_KILL:        //jmp !START+
                                rts			//internal jmp !TO_EXIT+                
                                                          
 !MAKE_ZOMBIE:                  lda #$fa                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                sta ZombieDelay,x   
 !TO_EXIT:                      rts			//internal jmp !EXIT+                   
                                                          
 !SUBTRACT_LIFE:                sec                          
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                lda PlayerLifeForce,x              
                                sbc !damagePoints-           
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                sta PlayerLifeForce,x                                             
 !EXIT:                         rts                          
                                                       
@@ -1770,7 +1794,7 @@ INFLICT_DAMAGE_OR_KILL:        //jmp !START+
                                                       
                                                          
 // This routine increases the life force of player indexed by A by an amount                           
-// stored in X                                           
+// stored in X.  Side effect returns PlayerIndex passed in A in the X register                                           
 !playerNum:                    .byte $18                      
 !lifePoints:                   .byte $ae                      
                                                          
@@ -1817,23 +1841,20 @@ DAMAGE_ROUTINE:                //jmp !START+
                                rts				//internal jmp !EXIT+                   
                                                          
 !CHECK_DEAD:                   lda #$00                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                cmp PlayerLifeForce,x              
                                bcc !DO_DAMAGE+              
                                rts				//internal jmp !EXIT+                   
                                                          
 !DO_DAMAGE:                    lda !stunCounter-            
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                sta PlayerDelayCountdown,x   
                                lda #$06                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                sta NonMoveAnimSeq,x         	//stun sequence
                                lda #$1e                     
-                               ldx PlayerIndex_zp              
-                               sta StunDelay,x              
-                               lda SoundStateLo_zp       
-                               ora #$10                     
-                               sta SoundStateLo_zp       
+                               //ldx PlayerIndex_zp              
+                               sta StunDelay,x    			                                          
                                lda !damagePoints-           
                                jsr INFLICT_DAMAGE_OR_KILL  
                                 
@@ -1843,21 +1864,19 @@ DAMAGE_ROUTINE:                //jmp !START+
                                                         
                                                         
                                                          
-// object stolen by ghost, do associated actions like sound, animation etc.                           
+// object stolen by ghost, do associated actions like player robbed sound, animation etc.                           
 !object:                       .byte $ad                      
                                                          
 OBJECT_STOLEN:                 //jmp !START+                  
                                                          
 !START:                        sta !object-                 
-                               lda #$0d                     
-                               sta SoundStateHi_zp
-                                           
+                                          
                                lda !object-                 
                                sta enemyInventory
                                           
                                clc                          
                                lda #$00                     
-                               ldx PlayerIndex_zp              
+                               ldx PlayerIndex_zp         
                                adc StatusBarTaskPtr,x       
                                sta map11_zpw                   
                                
@@ -1871,13 +1890,13 @@ OBJECT_STOLEN:                 //jmp !START+
                                sta (map11_zpw),y
                                              
                                lda #$08                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                sta NonMoveAnimSeq,x         
                                lda #$28                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                sta PlayerDelayCountdown,x   
                                lda #$1e                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                sta StunDelay,x              
                                rts                          
                                                         
@@ -1896,13 +1915,13 @@ INTERACT_ENEMY_LVLS02:         jmp !START+
                                bcc !STEAL_OBJECT+           
                                jmp !HURT_PLAYER+            
                                                          
-!STEAL_OBJECT:                 ldx PlayerIndex_zp              
+!STEAL_OBJECT:                 //ldx PlayerIndex_zp              
                                lda PlayerInventory,x        
                                sta $a0                      
                                lda $a0                      
-                               jsr OBJECT_STOLEN            
+                               jsr OBJECT_STOLEN         	//returns with player index in X   
                                lda #$00                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                sta PlayerInventory,x        
                                lda #$05                     
                                jsr INFLICT_DAMAGE_OR_KILL   
@@ -1928,20 +1947,20 @@ INTERACT_ENEMY_LVLS134:        jmp !START+
                                jmp !NOTHING_TO_STEAL+       
                                                          
 !STEAL:                        sec                          
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                lda StatusBarTaskPtr,x       
                                sbc #$01                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                sta StatusBarTaskPtr,x       
                                sec                          
                                lda CombinedTasksComplete    
                                sbc #$01                     
                                sta CombinedTasksComplete    
                                sec                          
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                lda NumberDiamonds,x         
                                sbc #$01                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                sta NumberDiamonds,x         
                                lda #$0a                     
                                jsr OBJECT_STOLEN            
@@ -1971,7 +1990,7 @@ HANDLE_TASKS_LVLS02:           jmp !START+
                                ldx GameLevel_gbl            
                                eor unlitLanternTbl,x        
                                beq !CHECK_INVENTORY+        
-                               jmp !START_TASK+             
+                               jmp !START_TASK+            // X has game level on this path!!!! 
                                                          
 !CHECK_INVENTORY:              ldx PlayerIndex_zp              
                                lda PlayerInventory,x        
@@ -1985,27 +2004,30 @@ HANDLE_TASKS_LVLS02:           jmp !START+
                                ldy map01_zpw+1                 
                                ldx map01_zpw                   
                                lda $a0                      
-                               jsr PLOT_2X2                 
-                               lda #$09                     
-                               sta SoundStateHi_zp            
-                               clc                          
-                               lda #$00                     
-                               ldx PlayerIndex_zp             
+                               jsr PLOT_2X2     
+                                           
+                               lda #($09 | $80)         //lantern sound          						// flag preempt
+			       ldx PlayerIndex_zp
+			       sta p1Sound_zp,x		//request load of new sound						// load
+			    			                             
+                               lda #$00
+			       clc
+                               //ldx PlayerIndex_zp             
                                adc StatusBarTaskPtr,x       
                                sta map11_zpw
                                
-                               txa                   		// player 1 7c, player 2 7b
-                               adc #$7c				//test                    
+                               txa                   	// player 1 7c, player 2 7b
+                               adc #$7c			//test                    
                                //adc #$00                     
                                sta map11_zpw+1
                                                 
-                               lda #$04                     //$c4 closed circle  
+                               lda #$04                 //$c4 closed circle  
                                ldy #$00                     
                                sta (map11_zpw),y               
                                lda #$00                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                sta PlayerInventory,x        
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                inc StatusBarTaskPtr,x       
                                inc CombinedTasksComplete    
                                ldx GameLevel_gbl            
@@ -2015,24 +2037,27 @@ HANDLE_TASKS_LVLS02:           jmp !START+
                                jsr UPDATE_SCORE             
                                rts				//internal jmp !EXIT+                   
                                                          
-!START_TASK:                   lda !tileUnderPlayer-        
+!START_TASK:                   lda !tileUnderPlayer-        	// X is arbitrary
                                eor #$31                     
                                beq !GET_CANDLE+             
                                rts				//internal jmp !EXIT+                   
                                                          
-!GET_CANDLE:                   ldx PlayerIndex_zp              
+!GET_CANDLE:                   ldx PlayerIndex_zp              	//need to reload X
                                lda PlayerInventory,x        
                                beq !PICK_UP_OBJECT+         
                                rts				//internal jmp !EXIT+                   
                                                          
 !PICK_UP_OBJECT:               lda #$00                     
                                ldy #$00                     
-                               sta (map01_zpw),y               
-                               lda #$0b                     
-                               sta SoundStateHi_zp            
+                               sta (map01_zpw),y    
+                                          
+                               lda #($0b | $80)      	// got candle sound						// flag preempt
+			       //ldx PlayerIndex_zp	// already from branch above
+			       sta p1Sound_zp,x		// request load of new sound					// load
+            
                                clc                          
                                lda #$00                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                adc StatusBarTaskPtr,x       
                                sta map11_zpw
                                
@@ -2045,7 +2070,7 @@ HANDLE_TASKS_LVLS02:           jmp !START+
                                sta (map11_zpw),y	
                                               
                                lda #$01                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp
                                sta PlayerInventory,x        
                                lda #$05                     
                                jsr UPDATE_SCORE             
@@ -2074,12 +2099,15 @@ END_LEVEL_PHASE:               jmp !START+              //if I comment this out,
                                                          
 !PICK_UP_KEY:                  lda #$00                     
                                ldy #$00                     
-                               sta (map01_zpw),y               
-                               lda #$0c                     
-                               sta SoundStateHi_zp            
+                               sta (map01_zpw),y   
+                                           
+                               lda #($0c | $80)        	 //key sound								// flag preempt      
+                               //ldx PlayerIndex_zp	//already in X
+			       sta p1Sound_zp,x		//request load of new sound						// load
+                                        
                                clc                          
-                               lda #$00                     
-                               ldx PlayerIndex_zp              
+                               lda #$00     
+                               //ldx PlayerIndex_zp              
                                adc StatusBarTaskPtr,x       
                                sta map11_zpw
                                
@@ -2093,7 +2121,7 @@ END_LEVEL_PHASE:               jmp !START+              //if I comment this out,
                               
                                              
                                lda #$02                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp   
                                sta PlayerInventory,x        
                                lda #$1e                     
                                jsr UPDATE_SCORE             
@@ -2104,7 +2132,7 @@ END_LEVEL_PHASE:               jmp !START+              //if I comment this out,
                                beq !CHECK_INVENTORY+        
                                rts			//internal jmp !EXIT+                   
                                                          
-!CHECK_INVENTORY:              ldx PlayerIndex_zp              
+!CHECK_INVENTORY:              //ldx PlayerIndex_zp
                                lda PlayerInventory,x        
                                eor #$02                     
                                beq !COMPLETE_LEVEL+         
@@ -2129,31 +2157,30 @@ END_LEVEL_PHASE:               jmp !START+              //if I comment this out,
                                ldx PlayerIndex_zp              
                                sta PlayerInventory,x
                                
-                               	//----added to ensure got door sound is not blocked or pre-empted----
+                               	//----ensure got door sound is not blocked or pre-empted----
 			       	//----and player can't run away from door after got it
 
-				lda #$ff		// mask out joysticks for both players
-			       	sta Player1JoyMask
-			       	sta Player2JoyMask
-!lp:	
-				lda soundPlaying1_zp 
-				ora soundPlaying2_zp 
-				bne !lp-
-				//------------------------------------------------------------------                               
+			       lda #$ff			// mask out joysticks for both players, remember to turn these back on!
+			       sta Player1JoystickMask_zp
+			       sta Player2JoystickMask_zp
+
+			       lda #0
+			       sta SoundStackPtr_zp   // invalidate all queued sounds
                                        
-                               lda #$12                 //got door sound    
-                               sta SoundStateHi_zp                                   
+                               lda #($12 | $80)         //got door sound    						// flag preempt
+			       //ldx PlayerIndex_zp	//already in X
+			       sta p1Sound_zp,x                            						//load
                                      
                                clc                          
-                               lda #$00                     
-                               ldx PlayerIndex_zp              
+                               lda #$00
+			       sta SoundStackPtr_zp   // invalidate all queued sounds
+                               //ldx PlayerIndex_zp	//already in x              
                                adc StatusBarTaskPtr,x       
                                sta map11_zpw
                                
                                txa
-                               adc #$7c
-                                          	                   
-                               adc #$00                     
+                               adc #$7c                                          	                   
+                               //adc #$00              // ***       
                                sta map11_zpw+1		
                                                      
                                lda #$00                     
@@ -2189,21 +2216,27 @@ HANDLE_TASKS_LVLS134:          jmp !START+
 !LEVEL_4:                      ldy map01_zpw+1                 
                                ldx map01_zpw                   
                                lda #$ba                     
-                               jsr PLOT_2X2                 
-                               lda #$13                     
-                               sta SoundStateHi_zp            
+                               jsr PLOT_2X2
+                                                
+                               lda #$13           	// level 4 object sound          
+			       ldx PlayerIndex_zp
+			       sta p1Sound_zp,x			       
+                                           
                                jmp !UPDATE_TASKBAR+         
                                                          
 !OTHER_LEVELS:                 ldx map01_zpw+1                 
                                lda map01_zpw                   
-                               jsr ERASE_2X2                
-                               lda #$14                     
-                               sta SoundStateHi_zp            
-!UPDATE_TASKBAR:               ldx PlayerIndex_zp              
+                               jsr ERASE_2X2  		// trashes X
+                                             
+                               lda #($14 | $80)               							// flag preempt      
+			       ldx PlayerIndex_zp
+			       sta p1Sound_zp,x		                                                     	// load         
+                                          
+!UPDATE_TASKBAR:               //ldx PlayerIndex_zp    // already in X          
                                inc NumberDiamonds,x         
                                clc                          
-                               lda #$00                     
-                               ldx PlayerIndex_zp              
+                               lda #$00         
+                               //ldx PlayerIndex_zp	// already in X             
                                adc StatusBarTaskPtr,x       
                                sta map11_zpw
                                
@@ -2212,11 +2245,11 @@ HANDLE_TASKS_LVLS134:          jmp !START+
                                //adc #$00                     
                                sta map11_zpw+1 
                                                
-                               lda #$06				// $c6 diamond                     
+                               lda #$06			   // $c6 diamond                     
                                ldy #$00                     
                                sta (map11_zpw),y     
                                          
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp
                                inc StatusBarTaskPtr,x       
                                inc CombinedTasksComplete    
                                sty HasDiamond               
@@ -2253,15 +2286,20 @@ CAPTURE_WIZARD:                jmp !START+                  	// don't comment ou
                                                 
                                ldx map01_zpw+1                 
                                lda map01_zpw                   
-                               jsr ERASE_2X2			// erasing the wizard from map
+                               jsr ERASE_2X2			// erasing the wizard from map, trashes X
                                                
 // setting jump table so that the routines for levels 1 3, 4 get run                           
                                lda HANDLE_TASKS_LVLS134+2   
                                sta JumpConfigTable+1        
                                lda HANDLE_TASKS_LVLS134+1   
-                               sta JumpConfigTable          
-                               lda #$15                     
-                               sta SoundStateHi_zp            
+                               sta JumpConfigTable       
+                                  
+                               lda #($15 | $80)            	// got wizard sound						// flag preempt       
+			       ldx PlayerIndex_zp
+			       sta p1Sound_zp,x      		//request new sound load					// load
+			       lda #0
+			       sta SoundStackPtr_zp		//invalidate the queue it's filled with lightning   
+          		       
                                lda #$32                     
                                jsr UPDATE_SCORE             
                                ldx #$14                     
@@ -2407,8 +2445,10 @@ SERVICE_TRAPS:                 //jmp !START+
                                beq !TRIGGER_TRAP+           
                                jmp !EXIT+                   
                                                          
-!TRIGGER_TRAP:                 lda #$0e                     
-                               sta SoundStateHi_zp            
+!TRIGGER_TRAP:                 lda #($0e | $80)             // trap expansion sound						// flag preempt                            
+			       ldx PlayerIndex_zp
+			       sta p1Sound_zp,x		    // request sound load						// load
+                                         
                                iny                          
                                sty TrapState                // set trap state to 1
                                lda !mapMsb-                 
@@ -2495,15 +2535,15 @@ INITIATE_PORTAL_TRAVEL:        //jmp !START+
                                lda #$2c                     
                                sta PortalDelayCounter       
                                lda #$0a                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp   
                                sta NonMoveAnimSeq,x         
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp          
                                lda PlayerControlMode,x      
                                eor #$02                     
                                beq !PORTAL_JUMP_ZOMBIE+     
                                rts				//internal jmp !EXIT+                   
                                                          
-!PORTAL_JUMP_ZOMBIE:           lda PlayerIndex_zp              
+!PORTAL_JUMP_ZOMBIE:           lda PlayerIndex_zp        		  // OPT: could be txa?    
                                eor #$01                     
                                sta $be                  
                                ldx $be                  
@@ -2578,7 +2618,7 @@ LIFE_DEATH_MOTION_AND_STUN:    //jmp !START+
                                //lda !playerNumInput-         
                                sta PlayerIndex_zp
                                              
-                               ldx PlayerIndex_zp              
+                               ldx PlayerIndex_zp              // OPT could be tax
                                lda PlayerTileYcoordinate,x      
                                sta !yCoordinate-
 
@@ -2602,57 +2642,60 @@ LIFE_DEATH_MOTION_AND_STUN:    //jmp !START+
                                beq !ALREADY_DEAD+           
                                jmp !LIVE_PLAYER_CONTROL+    
                                                          
-!ALREADY_DEAD:                 ldx PlayerIndex_zp              
+!ALREADY_DEAD:                 //ldx PlayerIndex_zp
                                lda PlayerControlMode,x      
                                eor #$02                     
                                beq !ALREADY_ZOMBIE+         
                                jmp !CHECK_ZOMBIFICATION_DELAY+  
                                                          
 !ALREADY_ZOMBIE:               lda !xCoordinate-            
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp
                                eor WeaponTile,x             
                                beq !SWITCH_ZOMBIE_CONTROL+  
                                jmp !ZOMBIE_TELEPORT+        
                                                          
 !SWITCH_ZOMBIE_CONTROL:        lda #$03                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp
                                sta PlayerControlMode,x      
                                lda #$fa                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                sta ZombieDelay,x                                                 
                                            
 !ZOMBIE_TELEPORT:              lda !xCoordinate-            
                                jsr INITIATE_PORTAL_TRAVEL   
                                jmp !PASS_TO_EXIT+           
                                                          
-!CHECK_ZOMBIFICATION_DELAY:    ldx PlayerIndex_zp              
+!CHECK_ZOMBIFICATION_DELAY:    //ldx PlayerIndex_zp              
                                lda ZombieDelay,x            
                                eor #$01                     
                                beq !WAKE_UP_FROM_DELAY+     
                                jmp !DECREMENT_DELAY_TIMER+  
                                                          
 !WAKE_UP_FROM_DELAY:           lda #$02                     	// set to zombie control mode
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp              
                                sta PlayerControlMode,x
                                
                                lda #$24				// switch the sprite patterns
                                sta ZombieOffset1_zp,x
                                
                                jsr RETURN_OBJECT_TO_MAP		//rjr added, if player had candle/stone/etc when killed return it to the map 
+								//uses PLOT_1_ON_FLOOR which trashes X
                                      
-                               lda #$17                     
-                               sta SoundStateHi_zp            
+                               lda #($17 | $80)                 // wake-up reanimate sound					// flag preempt
+			       ldx PlayerIndex_zp
+			       sta p1Sound_zp,x 		// request load of new sound					// load
+
                                rts				//internal jmp !PASS_TO_EXIT+           
                                                          
 !DECREMENT_DELAY_TIMER:        sec                          
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp  
                                lda ZombieDelay,x            
                                sbc #$01                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp            
                                sta ZombieDelay,x            
 !PASS_TO_EXIT:                 rts				//internal jmp !EXIT+                   
                                                          
-!LIVE_PLAYER_CONTROL:          ldx PlayerIndex_zp              
+!LIVE_PLAYER_CONTROL:          //ldx PlayerIndex_zp
                                lda PlayerJoystickBits,x           
                                and #$02                     
                                sta $be                  
@@ -2669,19 +2712,22 @@ LIFE_DEATH_MOTION_AND_STUN:    //jmp !START+
                                                          
 !USE_POTION:                   ldx #$0a                     
                                lda PlayerIndex_zp              
-                               jsr ADD_LIFE                 
+                               jsr ADD_LIFE                 // ADD_LIFE takes PlayerIndex from A and returns with it in X
                                lda #$00                     
                                ldy #$00                     
-                               sta (map01_zpw),y               
-                               lda #$11                     
-                               sta SoundStateHi_zp          
+                               sta (map01_zpw),y                                    
+      
+                               lda #($11 | $80)		// potion sound								// flag preempt                     
+			       //ldx PlayerIndex_zp	// already in X due to side-effect in ADD_LIFE
+			       sta p1Sound_zp,x											// load
+			                       
                                  
-!CHECK_LONG_STUN:              ldx PlayerIndex_zp              
+!CHECK_LONG_STUN:              ldx PlayerIndex_zp           // JUMP_3 may have hosed X   
                                lda PlayerDelayCountdown,x   
                                beq !CHECK_SHORT_STUN+       
                                rts				//internal jmp !EXIT+                   
                                                          
-!CHECK_SHORT_STUN:             ldx PlayerIndex_zp              
+!CHECK_SHORT_STUN:             //ldx PlayerIndex_zp
                                lda StunDelay,x              
                                beq !CHECK_CAN_INTERACT_TILE+  
                                jmp !DECREMENT_IMMUNITY_TIMER+  
@@ -2691,7 +2737,7 @@ LIFE_DEATH_MOTION_AND_STUN:    //jmp !START+
                                bcc !CHECK_IF_FALLING+       
                                jmp !ATTACK+                 
                                                          
-!CHECK_IF_FALLING:             ldx PlayerIndex_zp              
+!CHECK_IF_FALLING:             //ldx PlayerIndex_zp
                                lda PlayerShapeSelect,x                  
                                eor #$01                      // falling "shape" which is fixed standing pose animation
                                bne !HANDLE_ATTACKS_TRAPS+   
@@ -2707,10 +2753,10 @@ LIFE_DEATH_MOTION_AND_STUN:    //jmp !START+
                                rts				//internal jmp !EXIT+                   
                                                          
 !DECREMENT_IMMUNITY_TIMER:     sec                          
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp
                                lda StunDelay,x              
                                sbc #$01                     
-                               ldx PlayerIndex_zp              
+                               //ldx PlayerIndex_zp
                                sta StunDelay,x 
                                             
 !EXIT:                         rts                          
@@ -2794,22 +2840,26 @@ SEARCH_TUNE:                   //jmp !START+
                                                          
 !RESET_TUNE:                   ldy #$00                     
                                sty !note_idx-               
-!GET_NOTE:                     lda #$00                     
+!GET_NOTE:                     lda #$00
                                ldx !note_idx-               
-                               cmp !tuneTbl- ,x             
-                               bcc !CHECK_SOUND+            
+                               cmp !tuneTbl- ,x
+                               				   // this is needed, else tune plays fast with no real rests             
+                               bcc !CHECK_SOUND+           // branch if note value from table > 0  
                                jmp !SKIP_THIS_NOTE+         
                                                          
-!CHECK_SOUND:                  lda SoundStateHi_zp            
+!CHECK_SOUND:
+/*		               lda SoundStateHi_zp            
                                eor #$ff                     
                                beq !PLAY_NOTE+              
                                jmp !SKIP_THIS_NOTE+         
-                                                         
-!PLAY_NOTE:                    clc                          
+*/                                                         
+!PLAY_NOTE:
+		               clc                          
                                ldx !note_idx-               
                                lda !tuneTbl- ,x             
                                adc #$18                     
-                               sta SoundStateHi_zp            
+			       PUSHSOUNDONQUEUE_X()
+                                           
 !SKIP_THIS_NOTE:               inc !note_idx-               
 !EXIT:                         rts                          
                                  
@@ -2893,17 +2943,35 @@ CLOCKED_SOUND_AND_LIFE_DEC:    //jmp !START+
                                ldy #$01                     
                                sty PlayerIndex_zp              
                                lda #$01                     
-                               jsr INFLICT_DAMAGE_OR_KILL   
-!CHECK_SOUND:                  lda SoundStateHi_zp		//$ff when free
-			       ora soundPlaying2_zp		//$00 when free		 added, don't load unless voice 2 is free            
-                               eor #$ff                     
-                               beq !PLAY_NEXT_SOUND+        
-                               rts				//internal jmp !EXIT+                   
-                                                         
-!PLAY_NEXT_SOUND:              lda SoundEffectQueue         
-                               sta SoundStateHi_zp            
-                               lda #$ff                     
-                               sta SoundEffectQueue         
+                               jsr INFLICT_DAMAGE_OR_KILL
+                                                            
+                               
+!CHECK_SOUND:			// new version with stack-based sound queue, can use two voices and handle more than one queued sound
+/*				lda state_zp		//3
+				bne !EXIT+		//3,2		only do this on alternate frames to give the envelope restarts a chance
+				
+				// queue stuffer
+				ldx SoundStackPtr_zp	//3
+				beq !EXIT+		//3,2
+				lda SoundStack_zp-1,x	//4		-1 because first stack item=1, 0 means no items to pop
+
+				ldx soundPlaying2_zp	//3 	sound playing?  try voice2 first because that's AI in one-player mode
+				bne !tryOther+		//2,3
+				sta p2Sound_zp		//3		A still holds sound from above
+				jmp !success+
+!tryOther:			ldx soundPlaying1_zp	//3
+				bne !EXIT+		//2,3
+				sta p1Sound_zp		//3
+!success:			dec SoundStackPtr_zp	//5		only move the stack ptr if we loaded the sound into reg 1 or 2                               
+ */                                
+
+#if PAUSEKEY
+!PAUSE_ENGINE:			// simple game pause loop
+			       lda pauseKey_zp			//3
+			       beq !PAUSE_ENGINE-		//2	
+#endif
+
+ 				
 !EXIT:                         rts                          
  
                   
@@ -3112,13 +3180,23 @@ MAKE_LIGHTNING:                jmp !START+      	   	 // this is read to make ju
                                inc InitIndex_zp                      
                                jmp !LOOP-                   //******** WARNING CHECK LOCAL LABELS +/- ********
                                                          
-!RANDOM_DELAY:                 lda SoundStateLo_zp       
-                               ora #$40                     
-                               sta SoundStateLo_zp       
-                               clc                          
+!RANDOM_DELAY:			//and sound
+			       lda #$07			// lightning strike sound in new scheme
+			       ldy SID_RANDOM		// decide to load sound or zero in order to get more irregular sound intervals from queue
+			       cpy #$50
+			       bcc !silence+		// load null sound if rand < $50
+			       PUSHSOUNDONQUEUE_X()
+			       jmp !n+
+!silence:		       lda #0
+			       PUSHSOUNDONQUEUE_X()		       
+!n:
+    
+                               //clc                          
                                //lda #$0f
-                               //jsr GenRandom                     
-                               adc SID_RANDOM                  
+                               //jsr GenRandom  
+                   
+                               //adc SID_RANDOM 
+			       tya			// reuse random                 
                                sta $be                  
                                //lda $be                  
                                and #$3f                     
@@ -3333,7 +3411,7 @@ UPDATE_TELEPORTAL:             lda #$00
                                lda PortalDelayCounter+1     
                                sbc #$00                     
                                sta PortalDelayCounter+1     
-                               rts				//internal jmp !EXIT+                   
+                               rts				// internal jmp !EXIT+                   
                                                          
 !RELOCATE_PORTAL:              clc                          
                                lda #$dc
@@ -3365,7 +3443,7 @@ UPDATE_TELEPORTAL:             lda #$00
                                                          
 !GET_TARGET_POINTERS:          ldx TeleportalTargetY       
                                lda TeleportalTargetX       
-                               jsr GET_TARGETED_2X2       // GET_SAFE, GET_TARGETED etc return the X,Y coordinates of the 2x2 block in $fd,$fc  
+                               jsr GET_TARGETED_2X2      	 // GET_SAFE, GET_TARGETED etc return the X,Y coordinates of the 2x2 block in $fd,$fc  
                                lda $a1                      
                                sta TeleportalMapPtr+1       
                                lda $a0                      
@@ -3380,12 +3458,12 @@ UPDATE_TELEPORTAL:             lda #$00
                                lda $a0                      
                                sta TeleportalMapPtr
                                         
-!TARGETED_MODE:                lda $fd                  // GET_SAFE, GET_TARGETED etc return the X,Y coordinates of the 2x2 block in $fd,$fc
+!TARGETED_MODE:                lda $fd                 		 // GET_SAFE, GET_TARGETED etc return the X,Y coordinates of the 2x2 block in $fd,$fc
                                sta TeleportalX              
                                lda $fc                  
                                sta TeleportalY  
                                            
-                               ldy TeleportalMapPtr+1       // plot it
+                               ldy TeleportalMapPtr+1      	 // plot it
                                ldx TeleportalMapPtr         
                                lda #$cc                     
                                jsr PLOT_2X2                 
@@ -3394,18 +3472,22 @@ UPDATE_TELEPORTAL:             lda #$00
                                beq !END_MODE_1+             
                                jmp !END_OTHER_MODES+        
                                                          
-!END_MODE_1:                   lda #$02                     
-                               sta TeleportalMode           // this triggers block0 to call move_player_to_teleportal_exit
-                               lda #$1e                     
-                               sta SoundEffectQueue         
+!END_MODE_1:                               
+			       lda #$02                     
+                               sta TeleportalMode           	// this triggers block0 to call move_player_to_teleportal_exit
+                               //lda #$1e                     
+                               //sta SoundEffectQueue		// not used, now handled by animation sequencer	         
                                ldy #$00                     
                                sty TeleportalState          
+                                             
                                rts				//internal jmp !EXIT+                   
                                                          
 !END_OTHER_MODES:              ldy #$00                     
                                sty TeleportalMode           
-                               lda #$1d                     
-                               sta SoundEffectQueue 
+                               lda #$1d
+                               //sta SoundEffectQueue 		       
+                               PUSHSOUNDONQUEUE_X()  	// update portal and life decrement sound                   
+
                                        
 !EXIT:                         rts                          
             
@@ -3433,7 +3515,7 @@ LEVELS134:                     jmp !START+
                                jmp !CHK_ENEMY_DIAMOND+      
                                                          
 !PLACE_DOOR:                   lda #$10                     
-                               sta SoundEffectQueue         
+                               PUSHSOUNDONQUEUE_X()     
                                jsr GET_SAFE_2X2             
                                lda $a1                      
                                sta map2_zpw+1                 
@@ -3562,7 +3644,7 @@ LEVELS134:                     jmp !START+
                                jsr PLOT_2X2                 
                                lda #$02                     
                                sta TrapState                
-                               lda #$6e                     
+                               lda TrapAnimLength:#$64		//was $6e, sometimes did slightly more than 1 cycle of animation                   
                                sta TrapAnimationCounter     
                                rts				//internal jmp !EXIT+                   
                                                          
@@ -3593,8 +3675,9 @@ LEVELS134:                     jmp !START+
                                jsr PLACE_A_TRAP_ON_MAP      
                                ldy #$00                     
                                sty TrapState                
-                               lda #$0f                     
-                               sta SoundEffectQueue  
+                               lda #$0f                		//this sound is mapped to splat currently in wavetable     
+                               //sta SoundEffectQueue  
+			       PUSHSOUNDONQUEUE_X()
                                       
 !EXIT:                         rts                          
               
@@ -3654,8 +3737,8 @@ POPULATE_MAP:                  //jmp !START+
                                sty SBsearchColorFlag        
                                lda #$fa                     
                                sta LifeForceDecDelay        
-                               lda #$ff                     
-                               sta SoundEffectQueue         
+                               //lda #$ff                     
+                               //sta SoundEffectQueue         
                                lda END_MAGIC+2              
                                sta JUMP_4+2                 
                                lda END_MAGIC+1              

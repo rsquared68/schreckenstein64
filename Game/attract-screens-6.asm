@@ -7,6 +7,9 @@
 	2023-12-15 	prototyping start, from castle.asm
 	2023-12-20	integration start, code bits from start-end.asm
 	2024-01-05	added tune player calls, three screen types with bell and lightning effects
+	2024-11-21	v4 small changes for new sound architecture
+	2024-12-06	v5 enable flash on key input 
+	2024-12-10	v6 fix ignores f1 after victory screen
 
 */
 
@@ -18,11 +21,6 @@ OPTION_SCREEN:
 		// displays game option screen with castle, as well as high score in attract mode and game complete screen.
 		// overwrites map data at $ac00 in bank 2
 		//
-
-		lda #$ff
-		sta SoundStateHi_zp		// clear sounds
-		lda #$00
-		sta SoundStateLo_zp
 		
 		sta ATDCY2			//4	restart stupid envelope otherwise first gate on keypress can be crap	
 		sta FRELO2			//4
@@ -152,6 +150,9 @@ loop3:
 !optionScreen:
 		.const optionText = castlePicStore+800
 		.const optionColor = castleColorStore+800
+		
+		lda #0
+		sta GameLevel_gbl			// clear this otherwise f1 will be igorned after returning from victory screen
 				
 		jsr configureForTune			// start the sound sequence with the tune
 		
@@ -174,6 +175,9 @@ loop3:
 		beq !victoryScreen+
 		
 !hiScoreScreen:
+		lda #0
+		sta GameLevel_gbl			// clear this otherwise f1 will be igorned after returning from victory screen
+
 		jsr configureForBell			// start the sound sequence with the bell tolling 
 		
 		ldx #<(scoreColor1a-1)			// default to colors for 2 players
@@ -376,8 +380,26 @@ loop3:
 !skip:
 
 */ 
+		lda #GREY			// else change sky color
+		sta settingsColor
+		sta highScoresColor
+		
+		WAIT_FRAME_A()
+		
+		lda #DARK_GREY			
+		sta settingsColor
+		sta highScoresColor
+
+		ldx #4
+!wait:		WAIT_FRAME_A()			// wait some time before allowing retrigger
+		dex
+		bne !wait-
+		
+		lda #BLACK
+		sta settingsColor
+		sta highScoresColor
  
-		ldx #30
+		ldx #20
 !wait:		WAIT_FRAME_A()			// wait some time before allowing retrigger
 		dex
 		bne !wait-

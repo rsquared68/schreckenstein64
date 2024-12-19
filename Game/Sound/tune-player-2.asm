@@ -2,6 +2,7 @@
 
 	2024-01-02	derived from tunePlayer2.asm, broken up into subroutines to be called from attract mode
 	2024-01-05	ready for first real use
+	2024-11-11	updated symbol table load line 19 for new wavetable
 
 */
 
@@ -15,7 +16,7 @@
 	else .return 0
 	}
 	
-#import "sound-fx-wavetables-5.sym"
+#import "sound-fx-wavetables-7.sym"
 .const tuneLength1 = 74		// number of note-pairs (note,duration) in tune; can get from .print in wavetable assembly
 .const tuneLength2 = 52
 .const tuneLength3 = 62

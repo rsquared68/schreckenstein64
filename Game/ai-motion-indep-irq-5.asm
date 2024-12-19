@@ -27,9 +27,10 @@
 	2023-10-19	v2: simplified PlayerControlMode=1 so that it uses fewer cycles, shrank by commenting out check enemy and trigger weapon subroutines
 	2023-10-27	v3: fix map0 math, minor optimzations of sta...lda type
 	2023-12-06	v4: temp labels for relocation, new A_BETWEEN_XY macro for new parameter passing isolated to irq handlers
+	2024-11-24	v5: separate PlayerIndexIRQ_zp to avoid save/restore PlayerIndexIRQ_zp, optimization of ldx in teleportal routines
+	2024-12-03	v5: increased AI probability to climb from rand > $64 to rand > $40 
+			
 */
-
-
 
 
 
@@ -71,11 +72,11 @@ AI_DECISION_TO_JUMP:           jmp !L213F+
                                beq !L2168+                  
                                jmp !L2197+                  
                                                          
-!L2168:                        lda PlayerIndex_zp           
+!L2168:                        lda PlayerIndexIRQ_zp           
                                eor #$01                     
                                sta $ae                      
                                clc                          
-                               ldx PlayerIndex_zp           
+                               ldx PlayerIndexIRQ_zp           
                                lda PlayerTileYcoordinate,x  
                                adc #$01                     
                                sta $ac                      
@@ -85,7 +86,7 @@ AI_DECISION_TO_JUMP:           jmp !L213F+
                                bcc !L2184+                 
                                jmp !L2197+                  
                                                          
-!L2184:                        ldx PlayerIndex_zp           
+!L2184:                        ldx PlayerIndexIRQ_zp           
                                lda L1838,x                  
                                cmp SID_RANDOM  //SKREST_ATARI             
                                bcc !L2191+                  
@@ -166,7 +167,7 @@ AI_TRIGGER_WEAPON:             jmp !L21D0+
                                jmp !L2200+                  
                                                          
 !L21F9:                        lda #$00                     
-                               ldx PlayerIndex_zp           
+                               ldx PlayerIndexIRQ_zp           
                                sta PlayerJoyTrigger,x       //activate trigger
 !L2200:                        rts                          
                                                          
@@ -196,17 +197,17 @@ AI_DECISION_TO_CLIMB:          jmp !L2206+
                                beq !L222A+                  
                                jmp !L2243+                  
                                                          
-!L222A:                        lda #$64                     
-                               cmp SID_RANDOM  //SKREST_ATARI             
-                               bcc !L2234+                  
-                               jmp !L223C+                  
+!L222A:                        lda #$40		//#$64        	   was $64, but increase probability because sometimes gets stuck             
+                               cmp SID_RANDOM  			// SKREST_ATARI             
+                               bcc !L2234+                  	// don't climb if random > $64
+                               jmp !L223C+                  	// else climb
                                                          
 !L2234:                        lda !XonEntry-               
                                sta AiControlMask_zp                      
-                               jmp !L2243+                  
+                               jmp !L2243+                  	// no, exit
                                                          
 !L223C:                        lda #$01                     
-                               ldx PlayerIndex_zp           
+                               ldx PlayerIndexIRQ_zp           
                                sta PlayerCanClimbFlag,x     
 !L2243:                        rts                        
 
@@ -214,14 +215,15 @@ AI_DECISION_TO_CLIMB:          jmp !L2206+
 
 // ......................................................................
                                                                                
-SET_TELEPORTAL_TARGET:         lda TeleportalState          
+SET_TELEPORTAL_TARGET:      //opt: pass PlayerIndexIRQ_zp in X, and preserve X   
+                               lda TeleportalState          
                                beq !L2125+                  
                                jmp !L213A+          // exit        
                                                          
-!L2125:                        ldx PlayerIndex_zp           
+!L2125:                        //ldx PlayerIndexIRQ_zp           
                                lda PlayerTileXcoordinate,x  
                                sta TeleportalTargetX        
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                lda PlayerTileYcoordinate,x  
                                sta TeleportalTargetY        
                                ldy #$01                     
@@ -239,13 +241,13 @@ SET_TELEPORTAL_TARGET:         lda TeleportalState
 !temp1:                        .byte $a6                      
 !temp2:                        .byte $db                      
                                                          
-AI_MOTION_CONTROL:  	       //jmp !L2249+                  
+AI_MOTION_CONTROL:  	       //jmp !L2249+     
                                                          
 !L2249:				
 			      // need to create pointer to player position in map0, this was done by the caller when it was embedded in block0
 			      // since this can be called for either player we need to redo the math 
 				
-				ldx PlayerIndex_zp
+				ldx PlayerIndexIRQ_zp
 				beq !player1+
 				
 !player2:			clc                     //2    
@@ -270,7 +272,7 @@ AI_MOTION_CONTROL:  	       //jmp !L2249+
 
 !go:				// now start the AI mechanics proper
                                lda #$01                     
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                sta PlayerJoyTrigger,x       		// unset joy trigger
 
                                lda #$f5                     		// decide whether or not to set trigger to throw weapon
@@ -279,10 +281,10 @@ AI_MOTION_CONTROL:  	       //jmp !L2249+
                                jmp !L2261+                  
                                                          
 !L225A:                        lda #$00                     
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                sta PlayerJoyTrigger,x       		// set joy trigger
 
-!L2261:                        //ldx PlayerIndex_zp           
+!L2261:                        //ldx PlayerIndexIRQ_zp           
                                lda PlayerJoystickBits,x     		// get current control settings
                                eor #$0f                     
                                sta AiControlMask_zp                     // store in AiControlMask_zp
@@ -298,7 +300,7 @@ AI_MOTION_CONTROL:  	       //jmp !L2249+
 !L2277:                        lda #$02                     		// set AiControlMask_zp = 2, eliminating the possibility to go down
                                sta AiControlMask_zp                      
                                lda #$00                     
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                sta TryingToMoveFlag,x       		// set movement = blocked can't move
 
 !L2282:                        lda AiControlMask_zp                      		
@@ -320,24 +322,24 @@ AI_MOTION_CONTROL:  	       //jmp !L2249+
                                bne !L22A2+                  		// stick input contains up or down
                                jmp !L22FB+                  		// else jump over all of the next stuff that considers right/left movement
                                                          
-!L22A2:                        //ldx PlayerIndex_zp           		
+!L22A2:                        //ldx PlayerIndexIRQ_zp           		
                                lda TryingToMoveFlag,x       
                                beq !L22AC+                  		// branch if can't move in this direction
                                jmp !L22F8+                  		// else jump over all the next stuff that considers right/left movement
                                                          
 !L22AC:                        lda #$01                     		// set the desire to climb flag
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                sta PlayerCanClimbFlag,x     		
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                lda L1838,x                  		// L1838,9 probability of intentionally going towards other player vs making a random choice. smaller is more probable
                                cmp SID_RANDOM  //SKREST_ATARI             
 hpursuit:                      bcc !L22C0+                  		// decide to go right/left towards other player if SID_RANDOM > L1838,x
                                jmp !L22E3+                  		// decide to try to climb
                                                          
-!L22C0:                        lda PlayerIndex_zp           
+!L22C0:                        lda PlayerIndexIRQ_zp           
                                eor #$01                     		// get the other player's index
                                sta $ae                      		// store in $ae
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                lda PlayerTileXcoordinate,x  
                                ldx $ae                      		// NOTE CHANGED X REGISTER, NEED TO RELOAD PLAYERINDEX
                                cmp PlayerTileXcoordinate,x  		
@@ -370,21 +372,21 @@ hpursuit:                      bcc !L22C0+                  		// decide to go ri
 
                                // . . . . . . . . . . . . . . . . big jump skips stuff below  . . . . . . . . . . . . . . . . . . 
                                                          
-!L22FB:                        ldx PlayerIndex_zp           
+!L22FB:                        ldx PlayerIndexIRQ_zp           
                                lda PlayerCanClimbFlag,x     
                                beq !L2305+                  
                                jmp !L2359+                  		// continue to try to climb upward
                                                          
-!L2305:                        //ldx PlayerIndex_zp           
+!L2305:                        //ldx PlayerIndexIRQ_zp           
                                lda L1838,x                  		// L1838,9 probability of intentionally going towards other player vs making a random choice. smaller is more probable
                                cmp SID_RANDOM  //SKREST_ATARI             
 vpursuit:                      bcc !L2312+                  		// locate other player and climb towards him
                                jmp !L233B+                  		// or do random choice
                                                          
-!L2312:                        lda PlayerIndex_zp           		// find other player
+!L2312:                        lda PlayerIndexIRQ_zp           		// find other player
                                eor #$01                     
                                sta $ae                      
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                lda PlayerTileYcoordinate,x  
                                ldx $ae                      		// NEED TO RELOAD X WITH PLAYERINDEX
                                cmp PlayerTileYcoordinate,x  
@@ -442,10 +444,10 @@ vpursuit:                      bcc !L2312+                  		// locate other pl
                                jmp !L2394+                  
                                                          
 !L238D:                        lda #$00                     // indicate that player can't climb from here
-                               ldx PlayerIndex_zp           // NEED X WAS CLOBBERED
+                               ldx PlayerIndexIRQ_zp           // NEED X WAS CLOBBERED
                                sta PlayerCanClimbFlag,x
                                     
-!L2394:                        ldx PlayerIndex_zp           // NEED X WAS CLOBBERED
+!L2394:                        ldx PlayerIndexIRQ_zp           // NEED X WAS CLOBBERED
                                lda TryingToMoveFlag,x       
                                eor #$01                     
                                bne !L23A0+                  
@@ -470,7 +472,7 @@ vpursuit:                      bcc !L2312+                  		// locate other pl
                                sbc #$00                     
                                sta map1_zpw+1
                                     
-//                             ldx PlayerIndex_zp           	// don't run control mode 1 as it takes too long
+//                             ldx PlayerIndexIRQ_zp           	// don't run control mode 1 as it takes too long
 /*                             lda PlayerControlMode,x       
                                eor #$01                     
                                beq !L23CE+                  
@@ -501,7 +503,7 @@ vpursuit:                      bcc !L2312+                  		// locate other pl
                                sbc #$00                     
                                sta map1_zpw+1
                                     
-//                             ldx PlayerIndex_zp            
+//                             ldx PlayerIndexIRQ_zp            
 /*                             lda PlayerControlMode,x      // don't run control mode 1 as it takes too long
                                eor #$01                     
                                beq !L240A+                  
@@ -533,16 +535,16 @@ vpursuit:                      bcc !L2312+                  		// locate other pl
                                sta AiControlMask_zp 
                                                     
 !L2436:                        lda #$28                   // lower limit = maximum probability of deciding to pursue other player  
-                               ldx PlayerIndex_zp           
+                               ldx PlayerIndexIRQ_zp           
                                cmp L1838,x                // L1838,9 probability of intentionally going towards other player vs making a random choice. smaller is more probable 
                                bcc !L2442+                // **** 
                                jmp !L244F+                  
                                                          
 !L2442:                        sec                       // ****this seems to be decrementing too fast   
-                               ldx PlayerIndex_zp          
+                               ldx PlayerIndexIRQ_zp          
                                lda L1838,x               // L1838,9 probability of intentionally going towards other player vs making a random choice. smaller is more probable     
                                sbc #$01                  // make it more probable to go towards other player   
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                sta L1838,x              // L1838,9 probability of intentionally going towards other player vs making a random choice. smaller is more probable  
 
 !L244F:                        lda L1805                 // watchdog counter to check if ai is spending too much time in one Y position   
@@ -552,10 +554,10 @@ vpursuit:                      bcc !L2312+                  		// locate other pl
                                // check if we are trapped on a floor                           
 !L2457:                        lda #$c8                     
                                sta L1805                    // reset L1805 watchdog counter
-                               ldx PlayerIndex_zp           
+                               ldx PlayerIndexIRQ_zp           
                                lda PlayerTileYcoordinate,x  
                                sta !temp1-                  // temp1 now has this ai player's Y coordinate
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                lda L183A,x                  // this is this ai player's Y coordinate from the last time we ran this routine
                                sta temp0
                                                      
@@ -567,25 +569,27 @@ vpursuit:                      bcc !L2312+                  		// locate other pl
                                clc                          
                                lda !temp1-                  
                                adc #$03                     
-                               sta temp2			// temp1 = tile Y - 3, temp2 = tile Y + 3
+                               sta temp2		 // temp1 = tile Y - 3, temp2 = tile Y + 3
                                                      
                                ldy temp2                 // this ai player Y+3     
                                ldx temp1                 // this ai player Y-3     
 hosed:                         lda temp0                 // are we still within +/-3 tiles of the Y position when this routine ran last?
                                //jsr CHECK_A_BETWEEN_XY       		//          in this code A = Y+3 usually
 			       A_BETWEEN_XY_IRQ()	// returncode in A
-			       //lda temp0               //                  
-                               bne !L248B+         // yes, summon the portal to come get us from this floor 
-                               jmp !L2495+         // no, we are moving in Y so don't need to call the portal         
+			       //lda temp0              //                  
+                               bne !L248B+         	// yes, summon the portal to come get us from this floor 
+                               jmp !L2495+         	// no, we are moving in Y so don't need to call the portal         
                                
                                // whether this works OK is sensitive to TeleportTimeDelay1 needs to be >$50 for sure                          
 !L248B:                        lda #$b4                     // reset the pursuit probability to 30%			
-                               ldx PlayerIndex_zp           
+                               ldx PlayerIndexIRQ_zp	    // zapped by a_between   
                                sta L1838,x                  // L1838,9 probability of intentionally going towards other player vs making a random choice. smaller is more probable 
-                               jsr SET_TELEPORTAL_TARGET    // bring the teleportal to player indexed by PlayerIndex_zp, IF TeleportalState = 0
+
+							    // optimization: SET_TELEPORTAL_TARGET needs PlayerIndexIRQ_zp in X, and it will preserve X
+                               jsr SET_TELEPORTAL_TARGET    // bring the teleportal to player indexed by PlayerIndexIRQ_zp, IF TeleportalState = 0
 
 !L2495:                        lda !temp1-                  // temp1 still has this player's Y coordinate
-                               ldx PlayerIndex_zp           
+                               ldx PlayerIndexIRQ_zp        // zapped by a_between 
                                sta L183A,x                  // save this player's Y coordinate in L183A
                                lda #$32                     
                                cmp L1806                    
@@ -594,7 +598,7 @@ hosed:                         lda temp0                 // are we still within 
                                                          
 !L24A7:                        ldy #$00                     
                                sty L1806                    
-                               jsr SET_TELEPORTAL_TARGET // bring the teleportal to player indexed by PlayerIndex_zp , IF TeleportalState = 0
+                               jsr SET_TELEPORTAL_TARGET // bring the teleportal to player indexed by PlayerIndexIRQ_zp , IF TeleportalState = 0
                                jmp !L24B5+              // set PlayerJoystickBits and exit     
                                                          
 !L24B2:                        inc L1806                    
@@ -607,7 +611,7 @@ hosed:                         lda temp0                 // are we still within 
                                                    
 !L24C1:                        lda AiControlMask_zp                      
                                eor #$0f                     
-                               ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp	//opt           
                                sta PlayerJoystickBits,x     
                                
                                rts                          

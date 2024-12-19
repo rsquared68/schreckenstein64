@@ -7,6 +7,7 @@
 	2023-12-21	option/"attract" screen only
 	2023-12-23	v2, provision for option and highscore screens
 	2024-01-05	v3, added tune player, bell and lightning, waving flag
+	2024-12-06	v4, added labels for settingsColor and highScoreColor to enable flash on key input 
 
 */
 
@@ -117,7 +118,7 @@ ct:		WASTE_CYCLES_X(52-31)
 		WAIT_UNTIL_RASTERLSB_A($09)
 		WASTE_CYCLES_X(50)
 		
-		lda #BLACK
+		lda settingsColor:#BLACK
 		sta EXTCOL	//border
 		sta BGCOL0	//background
 
@@ -204,7 +205,7 @@ irq_highscore_:
 		sta EXTCOL	//border
 		sta BGCOL0	//background
 		WASTE_CYCLES_X(63-10)			
-		lda #BLACK
+		lda highScoresColor:#BLACK
 		sta EXTCOL	//border
 		sta BGCOL0	//background
 

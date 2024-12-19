@@ -297,8 +297,8 @@ loadtext:.text "please wait while loading..."
 // note screens to be at $400, $800, $c00 (-$0fff)
 .pc = vicMem1.get("VIDMAT_ABS") "Note Screens Disposable"
 
-.var note1 = LoadBinary("note-screens/unote1_rc1.bin")
-.var note2 = LoadBinary("note-screens/unote2_rc1.bin")
+.var note1 = LoadBinary("note-screens/unote1_v35.bin")
+.var note2 = LoadBinary("note-screens/unote2_v35.bin")
 .var note3 = LoadBinary("note-screens/unote3_rc1.bin")
 
 .fill 1000, note1.get(i)

@@ -9,6 +9,9 @@
 			triggering, made restarts consistent for all effects
 	2023-12-10	made zombie wake and lightning more substantial
 	2024-01-03	added tune note/duration tables for intro tune, replaced 64000 with actual PAL value of clock64
+	2024-11-11	v6 derived directly from v5, adjustments for new sound management scheme
+			v6b reduced lantern repeat cycles, reduced splat cycles
+	2024-12-06	v7 bring rev in line with v34 main, retuned potion and teleport for no dissonance
 */
 
 .pc = $e000 "Sound effect wavetables"
@@ -19,8 +22,6 @@
 .var fr = 0.0
 .var fr2 = 0.0
 
-//-----------------------------------------------------------------------------------------------------------------
-//	register $cb soundState_lo
 //-----------------------------------------------------------------------------------------------------------------
 nothing:
 // just nothing
@@ -108,18 +109,11 @@ death:
 .byte 3,  $40, $01, $fd, $ae, $20	//sustain/partial restart
 }
 .byte 1,  $00, $0f, $00, $00, $00	// end
-
-
-
-
-//-----------------------------------------------------------------------------------------------------------------
-//	register $cc soundState_hi   -- also stuff that is pushed into the sound queue ends up played
-//					by this register
 //-----------------------------------------------------------------------------------------------------------------
 lantern:
 .eval fr = kPAL*floor(clock64/128)
 .eval fr2 = kPAL*floor(clock64/20)
-.for(var n=0; n<17; n++) {
+.for(var n=0; n<15; n++) {		// was 17, this whole thing is kind of long
 .byte 1,  $81, $0a, $00, $00, $10
 .byte 1,  $41, $0a, $00, $80, $18
 .byte 1,  $81, $0a, $00, $00, $10
@@ -128,7 +122,7 @@ lantern:
 //-----------------------------------------------------------------------------------------------------------------
 splat:
 // 160ms  instant attack, slight decay, increasing frequency something like 800-1020Hz
-.for(var n=88; n>50; n+=-5) {		//160
+.for(var n=88; n>50; n+=-8) {		//160		was -5
 .eval fr = kPAL*clock64/n
 .byte 1,  $81, $04, $a0, <fr, >fr
 }
@@ -212,8 +206,13 @@ gotPotion:
 //60ms stairstep ramp up, noise modulated, repeated 13 times, around 800Hz fundamental?	
 //can't do it so rapidly flip to zero freq to make a buzz
 //was complicated and grating sounding in game so I took out noise bursts
-.eval fr = kPAL*floor(clock64/469)
-.eval fr2 = kPAL*floor(clock64/313)
+
+//.eval fr = kPAL*floor(clock64/469)	$0902 between C-3 and C#-3
+//.eval fr2 = kPAL*floor(clock64/313)	$0d7f between G-3 and G#-3
+
+.eval fr = $09b7			// D-3 retune slightly because was very dissonant with teleporter (which was C#-3, now C-3)
+.eval fr2 = $0cf8			// G-3
+
 //.byte 1,  $00, $0f, $00, <fr, >fr	// preset envelopes w/ standard hard restart parameter
 .for(var n=0; n<7; n++) {
 .byte 1,  $41, $20, $ff, <fr, >fr
@@ -316,7 +315,7 @@ searchTone1:
 // percussion instrument for door search tune
 // similar to 0, 1040Hz noise, 80ms duration, more decay
 .byte 4,  $81, $05, $10, $40, $45
-.byte 1,  $00, $0f, $00, $00, $00
+.byte 1,  $00, $0f, $00, $00, $00	//for this and following tones, doubling the restart time does not work
 //----------------------------------------------------------------------------------------------------------------
 searchTone2:
 // $1a, 182Hz for 220 ms, fast attack, slow decay to 1/4 amplitude, heavy pwm sound just do dominant tone
@@ -345,70 +344,32 @@ updateTeleportal:
 //-----------------------------------------------------------------------------------------------------------------
 useTeleportal:
 // 800ms volume ramp 140Hz
-.byte 3, 	$11, $b0, $80, $2c, $09
-.byte 4, 	$21, $b0, $80, $2c, $09
-.byte 33,	$41, $b0, $80, $2c, $09
+// was $092c = C#-3, but very dissonant
+.byte 3, 	$11, $b0, $80, $08, $08
+.byte 4, 	$21, $b0, $80, $08, $08
+.byte 33,	$41, $b0, $80, $08, $08
 .byte 1, 	$00, $0f, $00, $00, $00
 // extreme example here.  41*5=205 bytes in this wavetable. RLE would use 4+4*5 bytes = 24, saving 181 bytes.
 
-
+endTable:
 // there are 44 blocks containing 179 total repeated VBIs.  RLE could remove 5 bytes*(179-44) = 675 bytes,
 // but will add back in probably 100 bytes for the run length data...something like a 10-15% compression 
 
-victory:
 
-
-
-.function soundByte(b) {
-.var content = List()
-.var s1 = 0
-.var s2 = 0						//add to list in decreasing priority:
-	.if((b&$80)==$80) .eval content.add(8)		//death
-	.if((b&$10)==$10) .eval content.add(5)		//stunned
-	.if((b&$40)==$40) .eval content.add(7)		//lightning
-	.if((b&$04)==$04) .eval content.add(3)		//jump
-	.if((b&$02)==$02) .eval content.add(2)		//ladder
-	.if((b&$20)==$20) .eval content.add(6)		//weapon throw
-	.if((b&$08)==$08) .eval content.add(4)		//bonk
-	//.if((b&$01)==$01) .eval content.add(1)	//footstep sound now aribtrated and played by seperate logic on voice 3 only
-	
-	.if(content.size()==0) {
-		.eval s1=0
-		.eval s2=0
-		}
-		
-	.if(content.size()==1)	{
-		.eval s1=content.get(0)
-		.eval s2=0
-		}
-	.if(content.size()>1)	{
-		.eval s1=content.get(0)
-		.eval s2=content.get(1)
-		}
-	.return (s1+(s2<<4))
-}
 
 .align $100
-.pc = * "Sound arbitration table"		//needs page alignment
-FXarbTable:
-.fill 256, soundByte(i)
-
 //.................................................................................................................
 // some tables to map the sound indices to the start of each wavetable segment
 //.................................................................................................................
 
 .pc = * "Start of wavetable mapping table"
-sound0MapLo:		//this is actually one-hot encoded in the game so need to figure out how to remap
-.byte	<nothing, <footstep, <ladder, <jump, <bonk, <stunned, <throw, <lightning, <death
-sound0MapHi:
-.byte	>nothing, >footstep, >ladder, >jump, >bonk, >stunned, >throw, >lightning, >death
 
-sound1MapLo:
+soundMapLo:
 .byte	<nothing, <footstep, <ladder, <jump, <bonk, <stunned, <throw, <lightning, <death
 .byte	<lantern, <splat, <gotCandle, <gotKey, <robbed, <trap, <splat, <placeDoor
 .byte	<gotPotion, <gotDoor, <gotGemLevel4, <gotDiamond, <gotWizard, <batChirp, <wakeZombie, <tone0
 .byte	<searchTone1, <searchTone2, <searchTone3, <searchTone4, <updateTeleportal, <useTeleportal
-sound1MapHi:
+soundMapHi:
 .byte	>nothing, >footstep, >ladder, >jump, >bonk, >stunned, >throw, >lightning, >death
 .byte	>lantern, >splat, >gotCandle, >gotKey, >robbed, >trap, >splat, >placeDoor
 .byte	>gotPotion, >gotDoor, >gotGemLevel4, >gotDiamond, >gotWizard, >batChirp, >wakeZombie, >tone0
@@ -506,3 +467,74 @@ durationVoice3:
 //-----------------------------------------------------------------------------------------------------------------
 //-----------------------------------------------------------------------------------------------------------------
 //-----------------------------------------------------------------------------------------------------------------
+
+// print to console to help with debugging sounds that cross page boundaries
+
+
+
+.function ranges(l1,l2) {
+	.return toHexString(l1)+'-'+toHexString(l2-1)
+	}
+
+.print @"nothing:\t"+ranges(nothing, footstep)
+
+.print @"footstep:\t"+ranges(footstep, ladder)
+
+.print @"ladder:\t"+ranges(ladder, jump)
+
+.print @"jump:  \t"+ranges(jump, bonk)
+
+.print @"bonk:  \t"+ranges(bonk, stunned)
+
+.print @"stunned:\t"+ranges(stunned, throw)
+
+.print @"throw:\t"+ranges(throw, lightning)
+
+.print @"lightning:\t"+ranges(lightning, death)
+
+.print @"death:\t"+ranges(death, lantern)
+
+.print @"lantern:\t"+ranges(lantern, splat)
+
+.print @"splat:\t"+ranges(splat, gotCandle)
+
+.print @"gotCandle:\t"+ranges(gotCandle, gotKey)
+
+.print @"gotKey:\t"+ranges(gotKey, robbed)
+
+.print @"robbed:\t"+ranges(robbed, trap)
+
+.print @"trap:  \t"+ranges(trap, placeDoor)
+
+.print @"placeDoor:\t"+ranges(placeDoor, gotPotion)
+
+.print @"gotPotion:\t"+ranges(gotPotion, gotDoor)
+
+.print @"gotDoor:\t"+ranges(gotDoor, gotGemLevel4)
+
+.print @"gotGemLevel4:\t"+ranges(gotGemLevel4, gotDiamond)
+
+.print @"gotDiamond:\t"+ranges(gotDiamond, gotWizard)
+
+.print @"gotWizard:\t"+ranges(gotWizard, batChirp)
+
+.print @"batChirp:\t"+ranges(batChirp, wakeZombie)
+
+.print @"wakeZombie:\t"+ranges(wakeZombie, tone0)
+
+.print @"tone0:\t"+ranges(tone0, searchTone1)
+
+.print @"searchTone1:\t"+ranges(searchTone1, searchTone2)
+
+.print @"searchTone2:\t"+ranges(searchTone2, searchTone3)
+
+.print @"searchTone3:\t"+ranges(searchTone3, searchTone4)
+
+.print @"searchTone4:\t"+ranges(searchTone4, updateTeleportal)
+
+.print @"updateTeleportal:\t"+ranges(updateTeleportal, useTeleportal)
+
+.print @"useTeleportal:\t"+ranges(useTeleportal, endTable)
+
+
+

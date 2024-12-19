@@ -78,8 +78,27 @@
 	2024-01-04	v32 moved subroutine DEGLITCH_STRIPS into this file so it is placed in memory in a relatively stable location. It was
 			moving around too much when in helpers.asm, causing timing shifts as it is called from the SB handler segments.
 
-	
+	2024-11-12	v33 modifications for new sound architecture
+			PlayerIndex_zp is never guaranteed to be sync'd with state_zp or pass through irq handler, so
+			no opportunity to save cycles with SAVE/RESTOREPLAYERINDEX
+			retune timing for stabilzer at s1/dbug
 
+	2024-11-17	v34 local PlayerIndexIRQ_zp now for calls to block0 subroutines
+
+	2024-11-22	v35 sound queue manager now in irq.  Refactored playVoice1,2 to take some stress off of stabilizer.  Retimed Y delay branches.
+
+	2024-11-26	v36 reordered many of the sound parts, and re-timed for the stabilizers. Clean-up of timing near SNDMGRPHASE23 (d1:)
+
+	2024-12-02	v36b new stabilizer for playVoice2, retimed all of SB1 and going into view1. Removed experimental PAUSESOUNDQUEUE stuff.
+
+	2024-12-05	promote to v37 to have consistent version numbers in schreck-34, change ordering of configureBlit1 and updateView1SpriteStrip
+			to improve strip blanking on teleport in conjuction with changes to block0 near move player to teleport exit; also minor cleanup
+
+	2024-12-17	v38 add one more row of sprite strip blanking in deglitch strips, bottom of strip only. Retiming for deglitch required reworking the
+			structure going into the top of SB2 (to get MCM right in bottom right of view 1) and below SB2. Note that it now has a different
+			ordering than RC1 so it is not possible to do a direct timing compare above the "critical:" label.  Added pause key fetch at
+			sprDly2 enabled by #define PAUSEKEY.
+			
 */ 
 
 
@@ -136,7 +155,7 @@ irqStatusbar1:
         cmp #$c9			// improved? delay ladder..12
 	cmp #$c9			//
 	bit $ea24
-	bit $ea24
+	bit $ea24			// 35-42 cycles (for A=7 to A=0)
    
         txa
         pha
@@ -179,19 +198,22 @@ p1SBstart:			//	 next instruction cycle 12 of line $36  *** START OF P2 STATUSBA
 	//execute blit and erase
 	jsr moveShape1		// 222+16 +16 cycles
 
-	jsr playVoice3		// 27 routine + 12 jsr/rts, here it takes 56 cycles total
-//	WASTE_CYCLES_X(36)	// total 92 checked
-	SNDMGRPHASE1_AX()	//28	 inline sound manager
+// ********  manage part of the sound  ********
+
+	// 92 cycles below, but because of fetches not all are available
+	PLAYVOICE3_A()		// 24
+	SNDMGRPHASE1_AX()	// 44 
+
+	nop			// original tuning delays
+	nop			// cannot clear p1Sound, p2Sound here because of DMA
 	nop
-	nop
-	nop
-	nop
+//	nop
 	
 
 // *********  one row of grey blocks with blue bkgd (for sprites) and variable y  *************
 
 	lda Sb1Bg1:#LIGHT_GREY	//2	should match BGCOL1=GREY   light-grey(15) and yellow(7) are the same in mcm
-grey1:	sta $d021		//4	this instruction starts $3e cycle 54 
+grey1:	sta $d021		//4	this instruction starts $3e cycle 54 ($1b0) checked 11/23 using RC1 at different Y and during sound
 	
 	
 p1SBmid: // line $40, cycle 12  need to waste some cycles but add an FLD line for y=7
@@ -212,7 +234,7 @@ dV1mid_4:
 	jmp dV1midExit
 
 dV1mid_6:
-	WASTE_CYCLES_X(14+14)	// not sure what happened here but somehow forgot to check for grey leakage so empirically added 14
+	WASTE_CYCLES_X(14   +9)	// tuning to match RC1 better											************
 	jmp dV1midExit		
 			
 dV1mid_5:
@@ -230,12 +252,13 @@ screen1:
 	ora charsetMask //4
 s1:	sta $d018	//4	instruction starts line $40, cycle 47
 
-	nop		
-	nop
-	nop
-	nop
-	nop
+	lda #0				//2
+	sta p1Sound_zp 			//3	any sounds not successfully loaded are cleared and lost							************
+	sta p2Sound_zp 			//3
+
+	nop		//	in RC1, but removed in v33 with new sound to hit dbug timing as below and fix playVoice1 stabilizer			************
 	bit $00
+	
 dbug:	sty $d011	//      starts line $41, cycle 18
 
 
@@ -250,16 +273,16 @@ dbug:	sty $d011	//      starts line $41, cycle 18
 				//-2 for testing, cia stabilizer issue in playsound below
 	nop		//2	finish badline to complete an FLD line
 	sty $d011	//4	then set y back to desired value for viewport 2, this instruction finishes cycle 28 of line $43
-	nop		//      VICE needs this
+	//nop		//      VICE needs this
 	
 	jmp fini7
 	
-fini1:	WASTE_CYCLES_X(38)
+fini1:	WASTE_CYCLES_X(38	-2)	// two cycles here and at nop above for tuning to match RC1  ***********************
 	
 fini7: 	
 	// in earlier code without the sound players, originally the bne path burned 193 cycles here. 193-38 = 155
 
-	jsr playVoice1		// 142 + jsr/rti 12 = 156, but takes 203 color clocks due to sprites
+	jsr playVoice2		// 142 + jsr/rti 12 = 156, but takes 203 color clocks due to sprites
 				// pay attenttion to ckcia1 to be certain there is margin for stabilizer and stabilizer
 				// is not interrupted by sprite fetch
 
@@ -295,12 +318,23 @@ sprDly1:
 
 	//WASTE_CYCLES_X(87)	// original base delay before sound manager code inserted
 d1:
-	SNDMGRPHASE2_AX()	//36	 inline sound manager
-	SNDMGRPHASE3_AX()	//38	 inline sound manager in place this macro takes 60 cycles, together in place it takes 133 color clocks
-d2:
-	WASTE_CYCLES_X(87-74)
+	SNDMGRPHASE2_AX()	//24	 inline sound manager
+	SNDMGRPHASE3_AX()	//34	 inline sound manager in place this macro takes 60 cycles, together in place it takes 133 color clocks
 
-	lda map1y		//4
+	nop			// temp add delay for change to sndmgr
+																										  
+						   
+	nop
+	nop
+	nop
+	nop
+	nop
+	bit $fe			// 15 cycles needed
+	
+d2:		
+	WASTE_CYCLES_X(13)	// arrive here (d2) on line $4a, 158 (cycle 43) in RC1.          $4a cycle 45 in v36
+d3:
+	lda map1y		//4	line $4b, cycle 12 in v36
 	cmp #$13		//2
 	beq sprDly1_3		//3,2	branch if y=3, accumulating 9 cycles
 
@@ -310,13 +344,17 @@ d2:
 	bcc sprDlyDone		//3,2	 branch if out of range			this part 17 cycles if out of range, 100 cycles total
 
 sprDly1_456:
-	WASTE_CYCLES_X(24)
+	WASTE_CYCLES_X(24)		// check sprite for all y1 when tuning the above
 
 sprDly1_3:
 	nop		//2		// y=3 tuning delay
 	nop		//2
 	nop		//2
-	bit $fe		//3		two known options here. with 19 cycles (using the bit $fe) MCM is set too late by just under 4 chars (16 MCM pixels or 32 color clocks)
+	nop
+	nop
+	nop
+	nop
+	nop		//3		two known options here. with 19 cycles (using the bit $fe) MCM is set too late by just under 4 chars (16 MCM pixels or 32 color clocks)
 	nop		//2		with 18 cycles (switching a nop for the bit $fe) MCM is set too late by ~1 char and the last line
 	nop		//2		of sprite 0 is lost.  These things only happen when Y=3
 	nop		//2		By moving things around below the "problem" can either be color, MCM, or X-expand that is the problem
@@ -425,14 +463,11 @@ irq_Work1:
 #endif
 	sta $d020
 
-
-	SAVEPLAYERINDEX_A()
-	
-	lda #1					//which player, if you don't do this A gets pushed into $db by the routine and blows everything up!
+p2Motion:	
+	lda #1					// run player motion for player 2
+	sta PlayerIndexIRQ_zp
 	jsr PLAYER_MAIN_MOTION_SEGMENT		// 1225 cycles when player is moving, currently taking too much time
 		
-	RESTOREPLAYERINDEX_A()
-
 
 	SET_6502_IRQ_VECTOR_A(irq_PrepSB_2a)	// next interrupt handler address
         lda #irqLine_PrepSB_2a			// next irq trigger for reconfiguration of sprites 0,4 first two sprites in strip
@@ -681,8 +716,11 @@ irq_Statusbar2_:
 						//exits after cycle 7-8 of entry line+2
 	
 
+	jsr DEGLITCH_STRIPS	//	64+12 = 72 cycles.  There are 12 writes to the sprite strip in here
+				//	it used to be below setp2s, but get it out of the way of the sprite dma and badline change
+
 	// Goal here is to switch to the statusbar context (xscroll=$c3, yscroll=$17, bkgd color GREEN,
-	// and vicmem2 ptr) on line $97 by setting this all up starting with cycle ~55 of line $96
+	// and vicmem2 ptr) on line $97 by setting this all up starting with cycle ~40 of line $96
 			// 	next instruction starts line $96, $18 (cycle 3)
 	lda map1y	//3	get map1y position, note bit 4 is always set
 	and #7		//2
@@ -693,25 +731,41 @@ irq_Statusbar2_:
 	pha		//3	21 cycles
 	rts		//6	uses the stack as the jump vector, note addresses need to be -1 because rts 
 			//	auto-increments the pc by 1
-	
+
+
+	// the challenging part here is delays will depend on where the dmas land
+	// cpu can only be stopped on reads; max number of sequential cpu writes is 3
+
 y2_2:
+	nop
+	nop
+	nop
+	nop
+	bit $fe			//11			
+	jmp setp2s		//3	14
+
 y2_3:
 y2_4:
-y2_5:
-	WASTE_CYCLES_X(12)		
-	jmp setp2s		//3
+y2_5:				
+	WASTE_CYCLES_X(10)
+	nop			//12		
+	jmp setp2s		//3	15
 
-y2_6:					//badline in the way
-	WASTE_CYCLES_X(16)	//	 this is cycle-exact and it ruins stuff later because two badlines in a row, one with 7 sprites!		
-
-y2_0:
+y2_6:						// note two badlines in a row with 7 sprites!		
+	WASTE_CYCLES_X(10)
+	bit $fe			//13
+	jmp setp2s		//3	16
+			
+y2_0:				 
 y2_1:
 y2_7:
 setp2s:	
-	WASTE_CYCLES_X(91-60)	//	retimed when needed to add fin1HposMsb stuff below, 6 cycles // **************************** lda p2statusColor_zp+1 cycle below requires two cycles here
-	jsr DEGLITCH_STRIPS	//	48+12 = 60 cycles
+	WASTE_CYCLES_X(15)
+	nop			//	17
+	
 
-critical: 
+
+critical: 			// line $96,5 except for y=6, then want $95,26
 	lda #$7f		//2
 	sta $d01d		//4	double wide, except for last strip sprite
 
@@ -733,7 +787,9 @@ critical:
 
 p2SBstart:	// all paths converge here on cycle 47 of line $96  *** START OF P2 STATUSBAR NUMERICS, and it's a badline ***
 		// there are only 15(+5) cycles on $96 and 3(+5) cycles on $97
-		// timing verified for v25 and v27 of irqs 2023-12-03
+		// v35 2024-11-29 y1={0,1,2,3,4,5,7} line $96 cycle 47; y1={6} line $96 cycle 0
+		// this is how it needs to be for y1=6. If say you increase by 5 cycles so it lands on cycle 5 instead of 0
+		// the transition to the top of the SB will be destroyed by the badlines with the sprite fetches
 
 // based on analysis followed by trial and error shifting a few cycles each way
 	bit $00			//3
@@ -758,8 +814,16 @@ p2SBstart:	// all paths converge here on cycle 47 of line $96  *** START OF P2 S
 // *********  one row of grey blocks with green bkgd (for sprites) and variable y  *************
 
 	lda Sb2Bg1:#LIGHT_GREY	//2	sprite text color, should match BGCOL1=GREY? don't quite understand but works
-grey2:	sta $d021		//4  	this instruction starts line $9f, x=$48 cycle 9
+grey2:	sta $d021		//4  	this instruction starts line $9f, x=$48 cycle 9.  2024-11-29 verified v35 ok for all y1
 
+		// Easiest way to tune below is to first replace playVoice2 with a dummy delay, else the timer stabilizer will
+		// be crashing all the time while you're doing the raster/cycle measurements
+		// Once it's close you can put playVoice2 back in but it will still crash for some corner cases
+		// At that point, it's best to use a conditional break in VICE e.g. break ckcia2 a>7; command 1 "m map2y map2y"
+		// to understand which path to adjust. 
+
+		// Observed pathologies are playVoice2 gets stuck with soundPlaying2=ff but nothing iterating.  It can get stuck
+		// in a silent phase, and then no sounds will ever be heard after that.  Or, it can be stuck in an on phase.
 	
 p2SBmid:	// line $a0, cycle 12  need to waste some cycles but add an FLD line for y=7
 		// nominally around 21 cycles needed here, but +/- depending
@@ -767,25 +831,26 @@ p2SBmid:	// line $a0, cycle 12  need to waste some cycles but add an FLD line fo
 
 dV2mid_0:
 dV2mid_1:
-	WASTE_CYCLES_X(76)	// below just matching arrival times by comparing to statusbar 1
-	jmp dV2midExit		// arrive sta $d018 $a1, $1c0  -- 77 cycle delay $a1, $1b0, while 78 cycle delay jumps to $a2,$048
+	WASTE_CYCLES_X(75)	//	
+	jmp dV2midExit		//
 
 	// y=5 is combinable with the others in this statusbar
 dV2mid_2:
-	WASTE_CYCLES_X(39)
-	jmp dV2midExit		// broke out to help stabilize with badlines coming and going
+	WASTE_CYCLES_X(40)	//
+	jmp dV2midExit		//
+
 dV2mid_3:
 dV2mid_4:
 dV2mid_5:
-	WASTE_CYCLES_X(39 +11)
-	jmp dV2midExit		// this has a lot more room to grow but sprites+badlines make it easier to just leave margin
+	WASTE_CYCLES_X(50)	//											
+	jmp dV2midExit		//
 
 dV2mid_6:
-	WASTE_CYCLES_X(39 +9)
-	jmp dV2midExit		// broke out to help stabilize with badlines coming and going
+	WASTE_CYCLES_X(50)	// was 40, then 45 did nothing																			
+	jmp dV2midExit		// 
 
-dV2mid_7:
-	WASTE_CYCLES_X(19)	// retimed after adding strip msb OR above
+dV2mid_7:			//																							
+	WASTE_CYCLES_X(20)	// 
 	jmp dV2midExit		//
 
 dV2midExit:
@@ -803,47 +868,48 @@ scrn1_2:			//	next instruction line $a0, cycle 37
 	nop
 	nop
 	nop
-	bit $00			//
+	nop			//											
+	nop			//	changed from bit
 	sty $d011		//      start line $a1 cycle 16 finish cycle 20
 
 
-	// below, reason for shifting and adding delays is to ensure hermit stabilizer in playVoice2 does not 
+	// below, reason for shifting and adding delays is to ensure hermit stabilizer in playVoice1 does not 
 	// ever encounter a timing where the timer=8, for which it does not work.
 
 	// LINE OF FLD IN THE MID-BAR TO AVOID P2 VIEWPORT JUMP ON Y=7 DEGENERATE CONDITION
 	cpy #$17		//2
 	bne fin1_2		//3,2
-	
-	nop 			//2	this instruction starts line $a1 cycle 24   
+badline2:
+	nop 			//2	this instruction starts line $a1 cycle 24   					in v36b, $a1 cycle 26
 	lda #$12		//2	force badline on next line $a2
 	sta $d011		//4
 	WASTE_CYCLES_X(37)	//      get on to badline, because of sprites there are only a few cycles so this goes to the end	
 				//						
 	nop			//2	finish badline to complete an FLD line     
-	sty $d011		//4	then set y back to desired value for viewport 2, next line cycle 32 of $a3
-	nop 			//**	these two are tuning the stabilizer at some risk to sprDlyDone for y=7
+	sty $d011		//4	then set y back to desired value for viewport 2, next line cycle 32 of $a3	in v36b, $a3 cycle 24 finishes cycle 28
+	nop 			//**	
 	nop 			//**
 	jmp fin7_2
 				// schreck-24 is 200 cycles from bne for y!=7 to the ldx
 				// 		 216 cycles from bne for y=7              
 	
-fin1_2:	WASTE_CYCLES_X(37)	// 37+playVoice2(154) = 191+nop = original 193
+fin1_2:	WASTE_CYCLES_X(37)	// 37+playVoice2(154) = 191+nop = original 193		
 	
-fin7_2: // PUT CORRECT DELAY HERE TO GET BLACK BACKGROUND SET LINE $a7 BEFORE CYCLE 13   
+fin7_2: // PUT CORRECT DELAY HERE TO GET BLACK BACKGROUND SET LINE $a7 BEFORE CYCLE 13
+	// in RC1, arrive here between $a2 cycle 46 and $a3 cycle 33   
 	// before sound effect integration, burned 161 cycles here but actually takes 212 color clocks because of sprites
 	
-	jsr playVoice2		// play voice takes 142 + 12 for jsr/rts = 154, but because sprites its actually 204 color clocks observed		
-	bit $fe			// need 3 cycles here for v24 delay
-
-				// nop delay structure is here to tune for hermit stabilizer
-				// -->pay attention to ckcia2 to ensure there is margin, and ensure the stabilizer is not interrupted by sprites
 	
+//	WASTE_CYCLES_X(161)	// use for tuning timings above (no crash with this)
+	jsr playVoice1		// new, no timer-based stabilizer		
+				// 
+
 			
 	ldx map2x: #$d3		//2	map 1 x position
 	stx $d016		//4
 			
 	lda #BLACK		//2	
-black2:	sta $d021		//4	background 0   starts $a8, 14
+black2:	sta $d021		//4	background 0   starts $a8, 14 in RC1			$a8, 15 with new sound v36
 
 
 	// can configure sprite strip Y pos and enable mask while they are still scanning out as cover sprites		
@@ -866,10 +932,16 @@ black2:	sta $d021		//4	background 0   starts $a8, 14
 	
 	//now wait until possible to turn the other player sprite strip on by giving it the correct set of pointers
 sprDly2:
-
 	//WASTE_CYCLES_X(94)	// base delay  -6 for setting player sprite pointer above
 	STEPCHARSETANIM_AX()	//39
-	WASTE_CYCLES_X(94-39	+2)	// +2 retune for y=0,1
+
+#if PAUSEKEY
+	CHKPAUSE_A(pauseKey_zp)	//21	check for shift-lock, store mask in zp
+	WASTE_CYCLES_X(57-21)	
+#else
+	WASTE_CYCLES_x(57)	// +2 retune for y=0,1
+#endif
+
 
 	lda map2y		//4
 	cmp #$13		//2
@@ -885,10 +957,10 @@ sprDly2_456:
 	WASTE_CYCLES_X(23-2)
 
 sprDly2_3:
-	//nop			//2		removed in retune when adding charset animation above
-	bit $fe			//3		Tune for the most critical condition y=3; arrival at setup below is sensitive to 2 cycles or less.
+	//bit $fe		//3		Tune for the most critical condition y=3; arrival at setup below is sensitive to 1 cycle
 	nop			//2		By moving things around below the "problem" can either be color, MCM, or X-expand that is the problem
-	nop			//2		Failing to set MCM seems the least noticable of the possible glitches.
+	nop			//2		Failing to set MCM seems the least noticable of the possible glitches, and all versions even RC1 do this
+				//		For y=3, arrival at sprDlyDone2 is line $aa, cycle 50.  If arrive at cycle 49, the SB cover sprites will glitch
 
 
 sprDlyDone2:			//next instruction line $4b, x=$108-150
@@ -913,7 +985,7 @@ strip2:
 
 	lda #~tempMask					//2	
 	sta $d01c					//4	turn on MCM for topmost strip sprite
-							// 	critical section total 30 cycles.  This is very close but MCM gets set 4-6 cycles too late when y=3
+							// 	critical section total 30 cycles.  This is very close but MCM gets set too late when y=3
 
 	
 	.for(var n=1; n<4; n++) {
@@ -1009,12 +1081,16 @@ irq_Work2:
 	lda shapeAddrTbl.hi,y		//5
 	sta.zp BLITSRC+1		//3	total 20 cycles, 13+128 = 141 bytes
     
-    // generate blit-and-erase speedcode for V1 sprite strip
-	jsr updateView1SpriteStrip
-	jsr updateView2SpriteStrip 	// need to do this before the blitcode is generated for view 2. Currently just above the p2 statusbar, possible to move?
+    	// generate blit-and-erase speedcode for V1 sprite strip, and update both sprite strips for latest XY coordinates
+
+	//jsr updateView1SpriteStrip	// updates blitY1	OLD, move after configureBlit so that view1 and view2 have same level of "staleness"
+	jsr updateView2SpriteStrip 	// updates blitY2  need to do this before the blitcode is generated for view 2. Currently just above the p2 statusbar
+
 	ldx blitY1: #0
 	jsr configureBlit1		// I think this takes around 716 cycles
 
+      	jsr updateView1SpriteStrip	// updates blitY1
+      
       
 #if RASTERTIME	
 	lda #PURPLE			// mark rastertime
@@ -1022,9 +1098,23 @@ irq_Work2:
 	lda #BLACK
 #endif      
 	sta EXTCOL
+	
+	
+	
+	lda PlayerIndex_zp		// there's a gap before this interrupt block starts in which action sounds might be requested
+	beq !skip+			// skip to let voice 1 sounds go through; this may be needed when queue is super active
 
-					// don't need to save player index here as it's already set up
-	jsr STEP_MOTION_ANIM_SEQ	// animate player 2; pointers are still configured for player 2 from irq above
+	MANAGESOUNDQUEUE_AX()		// note that both step-motion routines (anim sounds) run right after this, then block 1 (action sounds)
+					// all loading happens after recycle to the top (line $37). However, pointers are set out of order in sndmgr2,3
+		// Manage queue > step motion 1 > step motion 0 > block 1 > playVoice3 > sndmgr-1     > clear p#Sounds > playVoice2 > sndmgr-2,3 > block 1  > playVoice1 
+		//   queue	    anim 1	    anim 2	  action12     play3   load voice regs   zero inputs      play 2     load ptr12	  action12     play1
+!skip:
+	
+
+p2Animation:	
+	lda #1
+	sta PlayerIndexIRQ_zp	
+	jsr STEP_MOTION_ANIM_SEQ	// animate player 2; pointers are still configured for player 2 from irq above.  This may request new blanking
  
 
 //-------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -1042,8 +1132,56 @@ irq_Work2:
 	sta EXTCOL
 
 
-	lda #0
-	sta BlankStrips_zp		// unblank strips if they were blanked
+	// this is the RC1 blank-reset time
+	lda #0				// blanking requested by block0:PlayerMainMotionSegment:ExecutePlayerAIMotion:DoNonmoveAnimation:MovePlayerToTeleportExit
+	sta BlankStrips_zp		// This will clear any blanking coming from STEP_MOTION
+
+
+
+	//  --- there seems to be room here for at least 30 cycles of untimed code ---
+
+#if TRAPSTRIP
+// trap strip blits that might go out of range vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+// combination of one player jumping and other falling can result in 2-4 lines (delta y=6-8); teleport aribtrary delta?
+	lda $71
+	beq !done1+
+	lda blitY1
+	beq !done1+	// skip if out of range
+
+	sec
+	sbc $71		// subtract from old value
+	sta $71
+	bpl !pos+	// get abs()
+  	lda #0
+  	sec
+  	sbc $71
+!pos:	cmp #9 //(2*3)	// vpos is 2x per step
+	bcc !done1+	// done1 if abs(y1new-y1old) < 2*3steps
+trap1:	nop		// else trap
+
+!done1:	
+	lda $72
+	beq !done2+
+	lda blitY2
+	beq !done2+	// skip if out of range
+
+	sec
+	sbc $72		// subtract from old value
+	sta $72
+	bpl !pos+	// get abs()
+  	lda #0
+  	sec
+  	sbc $72
+!pos:	cmp #9 //(2*3)	// vpos is 2x per step
+	bcc !done2+	// done2 if abs(y2new-y2old) < 2*3steps
+trap2:	nop		// else trap	
+
+!done2:
+	lda blitY1	// store new values
+	sta $71
+	lda blitY2
+	sta $72
+#endif
 
 
 	//don't start this too early
@@ -1086,14 +1224,15 @@ time:					// you need to burn enough rastertime above in order to race the beam 
 	// motions are only 50% of the speed of the original game
 	// and strip guard bands will not be wide enough to do erases for the resulting 2-pixel vertical moves
 
-
 	
-	jsr updatePlayerSpriteBothViews
+	jsr updatePlayerSpriteBothViews	// update the vpos and hpos lo,hi via SMC
 
-	SAVEPLAYERINDEX_A()		// need to remember the player index while code outside irq handler is paused
 
-	lda #0				// which player, if you don't do this A gets pushed into $db by the routine and blows everything up!
-	jsr PLAYER_MAIN_MOTION_SEGMENT	// 1225 cycles when player is moving original "slim," mostly fully optimized now 1163  
+p1Motion:
+	lda #0				// do player motion for player 1
+	sta PlayerIndexIRQ_zp
+	jsr PLAYER_MAIN_MOTION_SEGMENT	// 1225 cycles when player is moving original "slim," mostly fully optimized now 1163
+p1Animation:  
 	jsr STEP_MOTION_ANIM_SEQ	// this will only animate the player whose zp pointer bases are set up currently.
 					// Saved only 3 extra cycles after optimizing, but got an extra line from the two!
 
@@ -1101,22 +1240,17 @@ time:					// you need to burn enough rastertime above in order to race the beam 
 	lda PlayerControlMode
 	beq !n1+			// if 0=human, check other player
 	
-	lda #0
-	sta PlayerIndex_zp
-	jsr AI_MOTION_CONTROL
-	jmp !n2+			//done, only one player can be AI, because there is only one AiControlMask !
+	jsr AI_MOTION_CONTROL		// PlayerIndexIRQ still configured for player 1 (index 0)
+	jmp !n2+			// done, only one player can be AI, because there is only one AiControlMask !
 !n1:
 					
 	lda PlayerControlMode+1
 	beq !n2+			// if 0=human, done
 	
-	lda #1
-	sta PlayerIndex_zp
+	lda #1				// run for player 2
+	sta PlayerIndexIRQ_zp
 	jsr AI_MOTION_CONTROL
 !n2:
-	
-	RESTOREPLAYERINDEX_A()
-
 
 
 //========================================================================================================
@@ -1233,27 +1367,34 @@ DEGLITCH_STRIPS:
 !strip1:
 	lda blitY1			//4	local label in viewport-irqs, not zp for viewport #1
 	beq !clear1+			//2,3
-	WASTE_CYCLES_X(14)
+	WASTE_CYCLES_X(22)
 	jmp !strip2+			//3
 !clear1:
 	stx spriteBlk1+$40*0		//4	two bytes top row of strip  block 2 is data block for strip in viewport 2
-	stx spriteBlk1+$40*0+1		//4
+	stx spriteBlk1+$40*0+1		//4	in all this, only leftmost two bytes of sprite data rows are used
 	
-	stx spriteBlk1+$40*3+60		//4	two bytes bottom row of strip
+	stx spriteBlk1+$40*3+57		//4	two bytes bottom of strip
+	stx spriteBlk1+$40*3+58		//4
+
+	stx spriteBlk1+$40*3+60		//4	another two bytes bottom row of strip
 	stx spriteBlk1+$40*3+61		//4
 
-!strip2:				// through beq: 25 cycles
+!strip2:				// through beq: 33 cycles
 	lda blitY2			//4	local label in viewport-irqs, not zp for viewport #2
 	beq !clear2+			//2,3
-	WASTE_CYCLES_X(14)
+	WASTE_CYCLES_X(22)
 	jmp !done+			//3
-!clear2:
+!clear2:				// through beq: 40 cycles
 	stx spriteBlk2+$40*0		//4	two bytes top row of strip
 	stx spriteBlk2+$40*0+1		//4
 	
-	stx spriteBlk2+$40*3+60		//4	two bytes bottom row of strip
+	stx spriteBlk2+$40*3+57		//4	two bytes bottom of strip
+	stx spriteBlk2+$40*3+58		//4
+
+	stx spriteBlk2+$40*3+60		//4	another two bytes bottom row of strip
 	stx spriteBlk2+$40*3+61		//4
-!done:					//	total:	48 cycles	can maybe put near setp2s
+
+!done:					//	total:	64 cycles	can maybe put near setp2s
 
 	rts
 

@@ -64,12 +64,261 @@
 			Organize a bit for repo.  Remove USELOADER #define as it cannot work any longer.
 
 
+
+	2024-11-16	schreck-33	deprecated, part one of new sound scheme
+
+			Attempting new sound architecture: Player-triggered sounds are assigned to voice 1 for player 1
+			and voice 2 for player 2 with no crossover. All sounds associated with sprite animation are triggered
+			by the anim player (step, jump, climb, stunned, robbed, dying, teleporting) and these are blocked by
+			any sounds currently playing. All sounds associated with player actions without associated sprite
+			animations are are loaded by block0/1 routines and pre-empt any currently playing sounds (get object,
+			use object, trigger trap; also reanimate).  Added logic so that motion sounds associated with sprite
+			animation (stand, run, jump, climb) can never overwrite pending action sounds. This costs 12 cycles in
+			step-motion-anim so need to watch out for player 1.
+
+			The slight timing changes impact the play-voice1 stabilizer as usual; e.g. playing $11 got potion
+			glitches hermit scheme. Needed to tune delays for entry into play-voice1 at dbug.
+
+			PlayerIndex_zp is never guaranteed to be sync'd with state_zp or pass through irq handler, so
+			no opportunity to save cycles with SAVE/RESTOREPLAYERINDEX, but can do something like make an
+			isolated "PlayerIndex_IRQ_zp" in block0 to separate these completely.
+
+			Issues:  When falling onto a candle or jumping onto it with joystick down, candle sound won't play
+				 or can be cut off *sometimes*?
+				 Activate lantern/well sound has too long a final decay
+
+			New labels-9, sound-manager-4, wavetables-6a, tune-player-2, block0-slim-13, block1-slim-12,
+			viewport-irqs-33.  Optimization of ldx PlayerIndex duplications in block0,1.
+
+			Next steps:
+				Isolate PlayerIndex in routines called by irq handler 		X
+				Get play-voice3 going again for footsteps to free up voices	X
+				Implement queued life dec, door tune, chirp, etc. 
+				Remove all references to SoundStateLo/Hi			
+
+
+
+	2024-11-17	schreck-33b	deprecated; new sound scheme with code optimization
+
+			Replaced PlayerIndex_zp with PlayerIndexIRQ_zp in block0, ai-motion-indep-irq, viewport-irqs, labels.
+			Optimization of ldx PlayerIndex in ai-motion teleport routines.
+			Replaced absolute use of $db in player-moves with PlayerIndexIRQ_zp.  Ensure motion control is properly
+			initialized with PlayerIndexIRQ here in main.
+
+
+
+	2024-11-17	schreck-33c	baseline; re-enabled voice 3 for footsteps
+
+			New sound control register labels-11, block0-slim-15, play-voice3-2 putting footsteps in voice 3.
+			Works
+
+
+
+	2024-11-21	schreck-33d	deprecated; implemented new virtual-stack based sound queue but
+					needs extension for action sounds vs. queued sounds
+
+			Q:  Should POP from queue and push to sound register run inside or outside IRQ?
+			    Clocked_Sound_and_Life_Decrement runs about every 19k cycles, about once every frame or sometimes a little
+			    more than one frame, so outside in block1 is OK
+
+			Implemented virtual-stack based sound queue in block1, init, labels, schreck-macros, attract-screens
+			Currently not playing splat sound in PLOT_BURST when enemy killed, there are so many sounds playing now
+			SoundStateLo/Hi now no longer in labels.  SoundStackDepth currently 6 so using zeropage $60-65 for queue stack
+
+			Because AI throws weapons constantly, can collide with search tune. Turned off throw-weapon sound pre-empt
+			when LevelEndFlag=1.
+
+			New scheme to stop player(s) and AI from moving after door exited; applies mask inside EXECUTE_PLAYER_AI_MOTION
+			because AI routine running in IRQ can overwrite masking attempts done in the block0 inline joystick routine
+			which is outside the IRQ handler.
+
+			Retuned TrapAnimLength to try to prevent it from sometimes going slightly more than one char anim cycle.
+
+			Issues:  Place door sound not played
+				 Rarely, action sounds like got wizard can be overwritten by other stuff. As an experiment I invalidate
+				 the sound queue (stack ptr to zero) to stop lightning sounds still in queue after wizard captured.
+				 During teleport of player A, if player B is in frame he gets blanked at the same time as player A
+				 that is before the viewport is relocated to a new part of the map--he disappears too early
+
+
+
+	2024-11-21	schreck-33e	baseline, but queue sounds/action sounds race condition needs addressing
+
+			Sound queue now managed in irq on alternate frames. Queue will not overwrite loaded sounds not yet playing.
+			Most action sounds invalidate queue. Anim sounds do not pre-empt, because they can pre-empt themselves
+			(e.g. jump will constantly retrigger).  Used state_zp to cut frequency of chirp being triggered in half.
+			Fixed bug in that place door sound was not played.  Throw weapon sound no longer pre-empts.  Removed
+			remaining references to old SoundQueue.
+
+			This almost works except during intense sound queue utilization, some critical actions sounds aren't played.
+			For example, picking up a potion during lightning or key during door tune.  Invalidating the queue by setting
+			the pointer to zero does not help. I need a better method, maybe a PauseSoundQueue_zp flag.  Try that in
+			next spin.
+
+
+
+	2024-11-21	schreck-33f	FAILED BRANCH scheme to hacky, also doesn't accomplish goals.
+
+			Pauses sound queue logic for anim = {teleport, stun, robbed, death} and action =  {got potion, got wizard, got key}.
+			These are all the critical sounds that can happen during search tune and lightning phases. Got door has own
+			logic	
+
+			Pausing sound queue is not accomplishing what I want, got potion, wizard, robbed still overwritten by lightning?
+			Re-ordered stop and pre-empt, better. Try stopping queue once per lightning load and tune note load.
+
+			pre-empt (set soundPlaying to 0) then load (p1Sound,x = something) sometimes gets stuck with gate on and stale
+			data, because irq can start "in-between" with soundPlaying=0 and no sound loaded yet.
+
+			Next:  Using Load-Prempt (LP) only heard sound get stuck once. Possibly in irq I can just check for soundPlaying=0
+			on each voice and if so, force the associated gate off.  try this then compare LP with PL--need to recheck PL code
+			because I noticed and fixed some weirdness in it when creating LP.
+
+			It's very "hacky" with all these corner cases.
+
+			Renamed VoiceStream pointer labels to _zpw as they should be
+
+			Saw another teleporter bug.  If the portal transports to the same view on the same vertical level (e.g. just displacing
+			you on the same "level" sideways by a small amount) the portal sprite moves to the new location but the player does not.
+			The player coordinates, hpos, vpos, and viewport position were not changed at all. At the time I was in the bottom right
+			of the map so the viewport could not move, so maybe there's a condition where it can't do anything with the view so
+			nothing gets updated?  It should have moved the player coordinates and the sprite position.
+
+			Still have "other player in your view disappears at the same moment you disappear in the teleporter, before the viewport
+			moves" bug
+
+
+
+	2024-11-23	schreck-33g	DEPRECATED	"eliminate sound race conditions"  timing not correct yet
+
+			Idea:  Set bit 7 of sound index if the sound engine should pre-empt or not on loading that sound in the irq handler.
+				This allows a single memory write for both index and pre-empt, instead of two.  The race condition where
+				the two are split apart by an interrupt won't obtain. There will still be other race conditions that need to
+				be found and addressed...
+
+			Pre-empting now handled directly in sound-manger. Bit 7 of sound index controls whether to pre-empt already playing
+		  	sound (1) or to only load new sound if voice is already free (0).
+			Removed extra "lda stepSound_zp" and switched to macro version of play-voice3 for speed.
+
+			All non-move animation sounds (stun, robbed, death, teleport) have pre-empt bit set in block0 tables.
+			All directly played action sounds with the exception of throw weapon have pre-empt bit set.
+			Queued sounds are not pre-empting (chirp, life dec/portal update, reset trap, tune notes, place door, lightning)
+
+			Quite a few changes were necessary to get a reliably working improvement over the RC1 baseline.  The stabilizers
+			in playVoice1,2 were moved so that they stabilize the lda (),y only in reloadRegs. There are six indirect-indexed
+			loads, so in the case of a page crossing for a sound's table, up to seven possible 1-cycle delays are possible.
+			The stabilizer was moved so that it only handles these loads and not any other slop from branches across pages,
+			mistimed paths, etc. The symptom of the stabilizer going out of range (A>7 after $dc04 load) is a crash or a
+			"stuck" sound which can either be silent or gated on. Generally if it doesn't crash the stabilizer jumps over
+			the iteration decrement instruction so it keeps playing the current iteration over and over until something
+			writes 0 to soundPlaying for that voice.  It was necessary to rework all of the delays for the different Y
+			timing branches to keep it in range.
+
+			After fixing that, there were then a bunch of race conditions causing voice2 sounds to get messed up or not
+			play. This is because the sequencing of code requesting sounds, the stuffing of the sounds into the "voice"
+			registers in playSound1,2, and the setup of the VoiceStreamPtrs using the values in "voice" all happen in a
+			sequence that is preferrable for the graphic kernel timing and not for anything sane.  However, switching
+			the positions of playVoice1 and playVoice2 in the irq handler got rid of most of the conflicts.  This is partly
+			also because the sound queue manager (stuffs sounds into availble voices) tries to utilize voice 2 first.
+			The combination of the sequence and the preference of the queue to use voice 2 I believe caused too many
+			overwrites of voice 2.  This is the current sequence:
+
+		Manage queue > step motion 1 > step motion 0 > block 1 > playVoice3 >    sndmgr-1      > clear p#Sounds > playVoice2 > sndmgr-2,3 > block 1  > playVoice1 
+		   queue	    anim 1	  anim 2      action12     play3     load voice regs      zero inputs      play 2     load ptr12   action12     play1
+
+
+			This works mostly, player 2 does get overwritten still some times but not as bad.
+			Timing is not stable at sprdly1_.  The stabilizer in playvoice2 is not perfect...
+
+
+
+
+	2024-11-23	schreck-33h	DEPRECATED	New stabilizers for new sound architecture, correct timing, other fixes
+
+			Cleaned up the delay structure that was messed up by separating zeroing the sound inputs p1Sound_zp, p2Sound_zp outside of sndmgrphase3.
+			New stabilizer in play-voice1/2-3 which looks at the VoiceStreamPtr base to determine how many page crossings will occur, and then
+			subtracts cycles in a delay slide. This is not prone to failure like the hermit stabilizer, but still needed a cycle added here
+			and there I guess to accomodate sprite DMA. Re-timed irq v36b against sprDelayDone1/2, now seems as good as RC1.  All of the timings
+			are recorded in the paper notes for both RC1 and 33h.  There is only one timer-based stabilizer left, for irqStatusBar1.
+
+			Removed references to experimental "PAUSESOUNDQUEUE" that I never used. Null sound insertion scheme for lightning phase to get more
+			irregular intervals, otherwise the queue manager stuffs the sound at a very regular interval.  Added WAITBURST switch to make splat
+			graphic persist for full blit cycle when enemy killed--does not seem to slow things down too much and ensures burst is visible.
+			Increased AI probability to climb from rand > $64 to rand > $40.
+
+
+
+
+	2024-12-07	schreck-34	DEPRECATED	Teleport blanking, other features. Not ready for playtest release due to strip blanking.
+
+			Fix teleport blanking issue: other player in own view (sprite strip) disappears just as player teleports, due to blanking applied
+			to both strips before Y positions are updated.
+
+			In the RC1 way of doing things, the other player in own view will be blanked before the perspective shifts to the new portal
+			location. However, I do not see any evidence of opposite problem where the player is not blanked while Y is changing, which
+			can result in a "ghost" image on the sprite strip that remains until it is over-written. 
+
+			In this version I changed the ordering of the Y-compution (updateView1SpriteStrip, which sets blitY1) and the generation of the
+			blit speedcode (uses blitY1) in order to make view 1 "stale" for a frame where it was not in earlier versions.  However, view 2
+			was always stale for a frame so now they match. This allowed me to move the blanking enable in block0 (near move player to teleport
+			exit) to a part of the sequence where the blanking should not happen too early for view 1 or 2.
+
+			Fixed "AI gets stuck running into wall on right upper middle of third game level."  Caused be reaching X limit in movePlayerRight
+			while there is still one traversable tile remaining to the right of the player. AFAIK this only happens on that map, because the
+			walkable area is larger by one tile only on that map and in that area.  Changed X limit in plaer-moves-7:movePlayerRight from old
+			value of $ef to $f4.
+
+			Added sound queue invalidation during got door phase to ensure door sound plays--in one game I heard it overwritten by something.
+
+			On level 4 the map has climable features above the current Y minimum of 4.  Made Y min 2 safely I think (1 is definitely bad)
+			and view Y min reduced to 0 (note that the cmp must be $01 because bcc).  This is not enough to fix, so level 4 map was edited
+			top middle: extend rock from which ladder hangs, and edit spiderweb to the right. The top middle narrow part of level 5 seems OK
+			e.g for jumping.  Check spiderweb on atari top right level 4, can jump from web to platform?
+
+			Added flash on key input during attract screens (settings and highscores).  Slightly retuned wavetable so that teleport and potion
+			are not so mutually dissonant.  Removed an extra adc #$00 near block1:!COMPLETE_LEVEL.  Fixed "ignores f1" after victory screen in
+			attract-screens (reset GameLevel_gbl)
+
+			Instrumented code (#define TRAPSTRIP) for trapping too large a blit step.  One player fall while other jumping results in 4 line
+			displacements (8) and teleport can result in arbitrary displacements. I think the critical issue are teleports that get close
+			to the other player's Y, either coincidentally or due to "targeted" mode used by the zombie.
+
+			Not able to create a failed blank/deglitch on demand. Consider adding another line of deglitch in just the bottom row of strips,
+			costs 16 cycles and require retiming of SB2:critical and below
+
+			In .d64 build, temporary new V34-Test notescreen.
+
+
+
+	2024-12-17	schreck-35	BASELINE	enhancement of strip blank (required irq retime), pause feature, improved deglitch
+
+			Even with instrumented code and trying to force various strip delta-y scenarios I could not reproduce the sporadic strip
+			blanking issue in many hours of play.  There are cycles available below SB2 so I just added another row of deglitch
+			blanking as insurance--although I don't know it will really be insurance because it's possible that the deglitch condition
+			(blitY out of range) is never reached on the frame after the row fails to be erased.
+
+			Completely reworked timing at the top of SB2, moving the deglitch up and away from the badlines. viewport-irqs-38
+			Note that it now has a different ordering than RC1 so it is not possible to do a direct timing compare above the
+			"critical:" label.
+
+			Added game pause feature using shift-lock key.  viewport-irqs-38 looks for shift-lock/left-shift and sets pauseKey_zp.
+			If set block0 will bypass step-anim and main-motion routines, and block1 will freeze in clock handler. Can be compiled
+			conditionally with #define PAUSEKEY.  Uses new CHKPAUSE macro in shreck-macro. Pause code changes strip2 arrival for
+			y1=7, y2=1 to line $ab cycle 31 from cycle 30 but seems OK. 
+
+			Edited note screens for playtest release, pause control.
+
+
+	
 //                .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
 */ 
 
 
 // preproc switches
 
+#define PAUSEKEY		// shift-lock pause feature
+#undef TRAPSTRIP		// implement breakpoints at trap1 and trap2 if strip blit displaces more than a certain number of rows
+#define WAITBURST		// after burst plotted, wait for one frame to be sure that view has had its blit cycle
+#undef SLOWCHIRP		// reduce frequency of bat chrip
 #undef RASTERTIME		// display rastertime in border for non-statusbar sections
 #undef TILETRACKER		// diagnostic to track tileXY on map when turned on
 #define	DOUBLEDOWN		// allows double stepping in y in some parts of code (other parts may still be commented out)
@@ -82,8 +331,8 @@
 
 #import "../Includes/vicBank.asm"
 #import "../Includes/mapping.asm"
-#import "../Includes/r2-macros-2.asm"
-#import "../Includes/labels-8.asm"
+#import "../Includes/r2-macros-3.asm"
+#import "../Includes/labels-12.asm"
 #import "schreck-macros.asm"
 
 #import "../Load-Control/load-control.sym"
@@ -296,10 +545,12 @@ nextLevel:
 	
 	//housekeeping from last level
 	sta LoadLevelTrigger
+	//turn joysticks back on if they were turned off at end of level. Joystick bit overwrite is handled near where interrupt handler is stopped at level end
+	sta Player1JoystickMask_zp
+	sta Player2JoystickMask_zp
+	//init cycle state register; AFAIK doesn't matter 0/1 because
+	//PlayerIndex ends up getting bounced around independently of state now
 	sta state_zp
-	//turn joysticks back on if they were turned off at end of level
-	sta Player1JoyMask
-	sta Player2JoyMask
 	
 initColors:
 	// schreck mcm map tile color definitions per level
@@ -375,9 +626,11 @@ initColors:
 	sta $d015				// turn on all sprites
 	
 	lda #$00
-	sta PlayerIndex_zp			// run this once or weird stuff is in zp temp pointers causing a sound to get played
+	//sta PlayerIndex_zp			// run this once or weird stuff is in zp temp pointers causing a sound to get played, coordinates will be assigned wrong, etc.
+	sta PlayerIndexIRQ_zp
 	jsr PLAYER_MAIN_MOTION_SEGMENT		// when interrupt is first started at the bottom of the frame						
-	inc PlayerIndex_zp			
+	//inc PlayerIndex_zp
+	inc PlayerIndexIRQ_zp			
 	jsr PLAYER_MAIN_MOTION_SEGMENT
 
 
@@ -486,14 +739,21 @@ gameServiceLoop:
 	WASTE_CYCLES_X(16*63)	// wait some time with interrupts still enabled to ensure sound had a chance to load
 
 	// wait for level complete sound to end before stopping interrupts
+
+	lda #0			// otherwise sounds on stack will get played at start of next level
+	sta SoundStackPtr_zp
 !lp:	
 	lda soundPlaying1_zp 
 	ora soundPlaying2_zp 
 	bne !lp-
-
+	
+	
 	sei
 	lda #$f0        	// disable raster interrupts
 	sta $d01a 		// ICR
+	lda #0			// allow input again
+	sta Player1JoystickMask_zp
+	sta Player2JoystickMask_zp
 
 !isGameCompleted:
 	inc GameLevel_gbl
@@ -725,15 +985,15 @@ PrDec16Tens:
 
 
 .pc = * "Player Moves"				// new player movement subroutines (player, viewport, sprite)
-	#import "player-moves-5.asm"
+	#import "player-moves-7.asm"
 .pc = * "Update Transformations"		// math for sprite, sprite strip, and viewport positioning
 	#import "update-transformations-12.asm"
-.pc = * "Schreck Block 0"			// original player control, player movement, and sprite animation routines
-	#import "Engine/block0-slim-12.asm"
+.pc = * "Schreck Block 0"			// original player control, player movement, and sprite animation routines; runs in irq
+	#import "Engine/block0-slim-18.asm"
 .pc = * "AI control routines (formerly in block 0)"
-	#import "ai-motion-indep-irq-4.asm"	
+	#import "ai-motion-indep-irq-5.asm"	
 .pc = * "Schreck Block 1"  			// original 26c0-3fe6  movement and map interaction routines
-	#import "Engine/block1-slim-11.asm" 
+	#import "Engine/block1-slim-16.asm" 	// most of game mechanics / engine which runs outside of irq
 .pc = * "Random Number Generator"
 	#import "random-2.asm"
 
@@ -755,7 +1015,7 @@ PrDec16Tens:
 // nominally at $7c00
 
 #if USEFRAMES
-	.var SBspriteData = LoadBinary("Game-Assets/sprites/SB-Test-Blank-Frames2.bin")
+	.var SBspriteData = LoadBinary("../Game-Assets/sprites/SB-Test-Blank-Frames2.bin")
 #else	
 	.var SBspriteData = LoadBinary("../Game-Assets/sprites/Proto-game-SB-Full-FullCover4.bin")
 #endif	
@@ -773,9 +1033,9 @@ PrDec16Tens:
 .pc = $8000 "Schreck Block 2"  // original 8000-8148  helper routines, should be made relocatable but it is currently initializing the variable table at $8000
 	#import "Engine/block2-5.asm"
 .pc = * "Initialization Routines"
-	#import "init-4.asm" 
+	#import "init-5.asm" 
 .pc = * "Option/Attract Routines"
-	#import "attract-screens-3.asm" 
+	#import "attract-screens-6.asm" 
 .pc = * "Commodore Helpers"
 	#import "helpers-2.asm"
 //........................................................................................................................................................
@@ -785,17 +1045,18 @@ PrDec16Tens:
 // this table implements the transformation from x,y tile coordinates to map lsb = $80*(y%2) + x,  msb = $ac + floor(y/2)	
 //........................................................................................................................................................
 .pc = $9400 "Sound effect and music players"
-	#import "Sound/play-voice1.asm"
-	#import "Sound/play-voice2.asm"
-	#import "Sound/play-voice3.asm"	
-	#import "Sound/sound-manager-3.asm"	//macros for inlining
-	#import "Sound/tune-player.asm"
+	#import "Sound/play-voice1-3.asm"	// now stabilized without cia
+.pc = $9500					// do this as you can afford to not let anything timing critical cross a page boundary
+	#import "Sound/play-voice2-3.asm"	// now stabilized without cia
+	#import "Sound/play-voice3-2.asm"	// macro
+	#import "Sound/sound-manager-6.asm"	// macros for inlining
+	#import "Sound/tune-player-2.asm"
 //........................................................................................................................................................
 .pc = * "IRQ Handlers (Option/Attract Screens)"
-	#import "IRQ-Handlers/attract-irqs-3.asm"
+	#import "IRQ-Handlers/attract-irqs-4.asm"
 //........................................................................................................................................................
 .pc = $a001 "IRQ Handlers (Gameplay Kernel)"		// +1 because stupid emulator
-	#import "IRQ-Handlers/viewport-irqs-32.asm"
+	#import "IRQ-Handlers/viewport-irqs-38.asm"
 	#import "update-viewports-14.asm"
 //........................................................................................................................................................
 .label mapRam = $ac00

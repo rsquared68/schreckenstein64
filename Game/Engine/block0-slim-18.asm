@@ -36,7 +36,14 @@
 //	2023-12-04	More bonk adjust to stop retriggering on every frame
 //	2023-12-06	Inline joystick routine (deleted from block2).  Name temp variables so they can be relocated.
 //			This required a special new macro definition for A_BETWEEN_XY due to change in parameter variables
+//	2024-11-12	v13 reworked sound architecture, some optimization of ldx playerIndex
+//	2024-11-17	v14 local version of PlayerIndex = PlayerIndexIRQ_zp
+//	2024-11-21	v15 new joystick masking scheme to handle AI
+//	2024-11-23	v16 change nonmove animation-associated sounds to set new pre-empt bit 7
+//	2024-12-05	v17 moved sprite strip blanking for better timing, in conjunction with changes to viewport-irqs (37)
+//	2024-12-17	v18 added pause rtses; if pauseKey_zp set bypass anim and motion routines, enabled by #define PAUSEKEY
 //
+//			
 //                          
                     
 .const playerXtileOffset = 4 //4  // if set to >4 in some corners player can climb up inside a wall and get stuck.
@@ -59,7 +66,7 @@ MOVE_PLAYER_DOWN:              jmp movePlayerDown       //move player down by on
 //		Lookup table containing animation and sound sequence data for player motion
 // ===================================================================================================================                                                          
 // 
-animLookupTable:                           
+animLookupTable:                           			
 //                               .byte $75                      //shape data page (msb shape table address)
 //                               .byte $00                      //offset of shape block first frame of animation
 //                               .byte $00                      //offset of shape block last frame of animation
@@ -120,7 +127,7 @@ animLookupTable:
                                .byte $05                      
                                .byte $0a                      
                                .byte $ff                      
-                               .byte $00                      
+                               .byte $03      	// was 00                
                                .byte $00
                                                      
                                .byte $75   	// jump right        06                                    
@@ -129,7 +136,7 @@ animLookupTable:
                                .byte $06                      
                                .byte $0a                      
                                .byte $ff                      
-                               .byte $00                      
+                               .byte $03        // was 00              
                                .byte $00
                                                      
                                .byte $7e 	// 1st phase attacked, falling, confused         07             
@@ -138,7 +145,7 @@ animLookupTable:
                                .byte $08     	// jump to 8                 
                                .byte $06                      
                                .byte $ff                      
-                               .byte $00                      
+                               .byte ($05|$80)	// was 00	set pre-empt bit                      
                                .byte $00
                                                      
                                .byte $7e   	// 2nd phase attacked stunned stars        08      
@@ -156,7 +163,7 @@ animLookupTable:
                                .byte $0a                      
                                .byte $14                      
                                .byte $ff                      
-                               .byte $00                      
+                               .byte ($08|$80)	// was 00	set pre-empt bit            
                                .byte $00
                                                      
                                .byte $76   	// 2nd phase death   0a
@@ -174,7 +181,7 @@ animLookupTable:
                                .byte $00                      
                                .byte $0a                      
                                .byte $ff                      
-                               .byte $00                      
+                               .byte ($0c|$80)  // was 00 	set pre-empt bit                
                                .byte $00
                                                      
                                .byte $77   	//teleporting in    0c    
@@ -201,7 +208,7 @@ animLookupTable:
                                .byte $0e                      
                                .byte $c8	//c8                      
                                .byte $ff                      
-                               .byte $00                      
+                               .byte ($1e|$80)	// was 00	set pre-empt bit                      
                                .byte $00
                                                      
 AnimSeqTblPtr_const:           .word animLookupTable                    //constant pointer to start of sequence table above
@@ -426,16 +433,48 @@ setShape:                      sta ($a9),y			// stores shape to $8026 or $8030 b
                                sta $ae                      
                                lda AnimSeqTblPtr+1          
                                adc #$00                     
-                               sta $af                      
-                               lda SoundStateLo_zp 
-                               ora ($ae),y                  
-                               sta SoundStateLo_zp 
-                               rts                          
+                               sta $af
+                                                     
+				// new version sound engine, schreck-33 and beyond             
+                               ldx PlayerIndexIRQ_zp		//3
+                               lda ($ae),y   			//5	the table only references sounds for climbing and walking in Finzel's code, I've extended it
+			       beq !soundDone+			//2,3	don't overwrite with "silent sound" in case game engine is trying to request an action
+
+			       cmp #1				//	is it a footstep
+			       bne !skip+
+			       sta stepSound_zp			//	handle footstep with voice 3 for both players
+			       jmp !soundDone+
+			       
+!skip:			       	
+			       tay				//2	store sound temporarily
+			       lda p1Sound_zp,x			//4	is there an action sound request from block0,1 already pending?
+			       beq !load+			//2,3 	no, go ahead with any anim sound
+			       cpy #3				//2	is the anim sound a 0-3 noncritical move sound (none, walk, climb, jump)?
+			       bcs !soundDone+			//2,3	yes, don't overwrite an action sound with a new noncritical sound (skip if y>=3)
+!load:			       tya				//2	
+			       sta p1Sound_zp,x			//4	else overwrite with a new load
+								//	
+								//	
+!soundDone:					
+                               rts                                  
+                               
                                                          
 // COMPUTE_HPOS_VPOS_FROM_COORDS:
 
-// This is called by the first work interrupt.  There is an issue that the zp pointers remain set up for whatever player was indexed by                                                          
-STEP_MOTION_ANIM_SEQ:          lda PlayerSpriteCtrlBase_zpw  
+
+
+//	This runs once per frame for each player, and runs the animiation of the player sprites and loads their associated sounds when applicable
+                                                         
+STEP_MOTION_ANIM_SEQ:      
+    
+#if PAUSEKEY
+!PAUSE_MOTION:			// prevent player sprite animation and sound when paused
+			       lda pauseKey_zp
+			       bne !n+
+			       rts
+!n:
+#endif
+			       lda PlayerSpriteCtrlBase_zpw  
                                sta $ae                      
                                lda PlayerSpriteCtrlBase_zpw+1 
                                sta $af                      	//$ae = SpriteCtrlBase
@@ -996,7 +1035,7 @@ DO_JUMPING_MOTION:             sec
                                //lda temp0
 			       A_BETWEEN_XY_IRQ()                      
                                sta $f6                      
-                               ldx PlayerIndex_zp           
+                               ldx PlayerIndexIRQ_zp           
                                lda TryingToMoveFlag,x       
                                beq !L19FC+                  
                                ldx map0_zpw+1                      
@@ -1093,7 +1132,7 @@ DO_JUMPING_MOTION:             sec
                                                          
 ADJUST_Y_SLOPES_UNPHYS:        ldx map0_zpw+1                      
                                lda map0_zpw                      
-                               jsr CHECK_IF_TILE_CLIMBABLE_1 
+                               jsr CHECK_IF_TILE_CLIMBABLE_1 //returns with X unchanged
                                lda temp0                      
                                bne !L1A8B+               // branch if climable   
                                jmp !L1A90+                  
@@ -1104,7 +1143,7 @@ ADJUST_Y_SLOPES_UNPHYS:        ldx map0_zpw+1
                                                          
 !L1A90:                        ldy #$00                     
                                sty $f6                      
-                               ldx PlayerIndex_zp           
+                               ldx PlayerIndexIRQ_zp           
                                lda PlayerJoystickBits,x     
                                and #$08                 // bit 3, set for every direction except right
                                sta $ae                      
@@ -1266,53 +1305,29 @@ ADJUST_Y_SLOPES_UNPHYS:        ldx map0_zpw+1
                                sta temp0                      
                                rts                          
                                             
+            
                                             
+                                                                                                                                  
                                             
-                                            
-                                            
-                                            
-/*                                                         
-SET_CAN_CLIMB:                 lda #$00                     
-                               ldx PlayerIndex_zp           
-                               sta TryingToMoveFlag,x       
-                               lda #$00                     
-                               //ldx PlayerIndex_zp           
-                               sta PlayerCanClimbFlag,x     
-                               lda SoundStateLo_zp 
-                               ora #$08                     
-                               sta SoundStateLo_zp 
-                               rts                          
-*/
-
-/*
-.macro SETCANCLIMB_AX() {
-			       lda #$00                     
-                               ldx PlayerIndex_zp           
-                               sta TryingToMoveFlag,x                                   
-                               sta PlayerCanClimbFlag,x     
-                               lda SoundStateLo_zp 
-                               ora #$08                     
-                               sta SoundStateLo_zp 
-}
-*/
-
+			       // Replaces original setcanclimb subroutine
 .macro SETCANCLIMB_AX() {      // "no AI bonk version" + "limited bonk repeat version"
 			                         
-                               ldx PlayerIndex_zp
+                               ldx PlayerIndexIRQ_zp
                                lda PlayerControlMode,x
                                bne !skip+
                                
-                               lda soundPlaying1_zp
+                               lda soundPlaying1_zp,x	// look at player-associated voice
                                bne !skip+           
- 
-                               lda SoundStateLo_zp 
-                               ora #$08                     
-                               sta SoundStateLo_zp 
+                            
+                               lda #$04			// new bonk sound mapping replacing one-hot encoding
+			       sta p1Sound_zp,x		// load player voice if not playing
+                                                            
 !skip:                              
                                lda #$00   
                                sta TryingToMoveFlag,x                                   
                                sta PlayerCanClimbFlag,x    
 }
+
 
 
 
@@ -1468,7 +1483,7 @@ CLIMB_UP:                      ldx map0_zpw+1
                                                      
                                ldx temp1                      
                                lda temp0                      
-                               jsr CHECK_IF_TILE_CLIMBABLE_1 
+                               jsr CHECK_IF_TILE_CLIMBABLE_1 // returns with X unchanged
                                lda temp0                      
                                sta $f6                      
                                lda $f5                      
@@ -1476,7 +1491,7 @@ CLIMB_UP:                      ldx map0_zpw+1
                                sta $ae                      
                                //lda $ae                      
                                bne !L1C9D+                  
-                               jmp !L1CD0+                  
+                               jmp !L1CD0+          // X still has temp1        
                                                          
 !L1C9D:                        lda #$04                     
                                sta $f0                      
@@ -1502,13 +1517,13 @@ CLIMB_UP:                      ldx map0_zpw+1
                                rts		//internal jmp !L1CCD+                  
                                                          
 !L1CC6:                        //jsr SET_CAN_CLIMB
-			       SETCANCLIMB_AX()	//inline            
+			       SETCANCLIMB_AX()	//inline           returns with player index in X 
                                lda #$03                     
                                sta $f0                      
 !L1CCD:                        rts		//internal jmp !L1CDD+                  
                                                          
 !L1CD0:                        lda #$00                     
-                               ldx PlayerIndex_zp           
+                               ldx PlayerIndexIRQ_zp           
                                sta TryingToMoveFlag,x       
                                ldy #$00                     
                                sty $f0                      
@@ -1536,7 +1551,7 @@ CLIMB_DOWN:                    ldx map0_zpw+1
                                                      
                                ldx temp1                      
                                lda temp0                      
-                               jsr CHECK_IF_TILE_CLIMBABLE_1
+                               jsr CHECK_IF_TILE_CLIMBABLE_1	// returns with X unchanged
                                lda temp0                      	
                                sta $f6                      
 /*                             lda $f5                  
@@ -1545,7 +1560,7 @@ CLIMB_DOWN:                    ldx map0_zpw+1
                                sta $ae                 
                                //lda $ae                      
                                bne !L1D0E+                  
-                               jmp !L1D34+                  
+                               jmp !L1D34+           // X still has temp1       
                                                          
 !L1D0E:                        lda #$04                 
                                sta $f0                      
@@ -1569,7 +1584,7 @@ CLIMB_DOWN:                    ldx map0_zpw+1
 !L1D31:                        rts		//internal jmp !L1D41+                  
                                                          
 !L1D34:                        lda #$00                     
-                               ldx PlayerIndex_zp           
+                               ldx PlayerIndexIRQ_zp           
                                sta TryingToMoveFlag,x       
                                ldy #$00                     
                                sty $f0                      
@@ -1669,7 +1684,7 @@ MOVE_PLAYER_TO_TELEPORT_EXIT:  //jmp !L1D47+
 newY:                          sta ($ae),y		// player Y coordinate lsb		***checked, x and y for player computed correctly
 
 
-               // this part is doing sprite updates and view updates  	************rewrite with own code!
+               // this part is doing sprite updates and view updates  
 	       //  going to be challenging because need to update viewport in a way that does not
 	       //  cause it to go out of map memory when portal lands near perimeter
 	       //  and then the sprite hpos,vpos need to be computed consistent with the player and
@@ -1843,7 +1858,7 @@ doYhi:
 		sbc $45			// minus viewport x
 		clc
 		adc #$13+h0		//sprite offset, must be correct relative to starting position so h0 offset is applied
-		ldx PlayerIndex_zp
+		ldx PlayerIndexIRQ_zp
 		sta p1HposV1,x		// to hpos			
 //
 	        rts                          
@@ -1861,11 +1876,11 @@ doYhi:
 					// clocking in main loop and ai motion outside of irq in main loop
 .const TeleportTimeDelay2 = $40                                                
                                                          
-DO_NONMOVE_ANIMATION:          ldx PlayerIndex_zp           
+DO_NONMOVE_ANIMATION:          ldx PlayerIndexIRQ_zp           
                                lda NonMoveAnimSeq,x          
                                sta $f4                      
                                lda #$00                     
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                sta NonMoveAnimSeq,x   
                                      
                                lda $f4                      
@@ -1910,11 +1925,11 @@ hurt:                          sta $f0
                                lda #$09                     
                                sta $f1                      
                                lda #$0b                     
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                sta NonMoveAnimSeq,x         
                                lda #TeleportTimeDelay1  //#$3c              
-                               //ldx PlayerIndex_zp           
-                               sta PlayerDelayCountdown,x   
+                               //ldx PlayerIndexIRQ_zp           
+                               sta PlayerDelayCountdown,x                                  
                                rts	//internal jmp !L1F18+                  	// exit
                                                          
 !L1ED7:                        
@@ -1932,42 +1947,49 @@ hurt:                          sta $f0
                                lda PlayerCoordBase_zpw+1     
                                adc #$00                     
                                sta temp3+1
+                               
                                ldy #$00                                                                  
 blank:                         lda (temp3),y               	// player shape 
 			       cmp #16				// blank
-			       beq !n+
+			       beq !n+				// if player animation blank, blank strips in both views and start jump (this blanks player in other view, and other player in player view)
 			       jmp !L1F11+			       
 !n:
-                               lda #1
-                               sta BlankStrips_zp	// blank the other player strip
-			       
-			       
+								// *** This happens too early! Move below, but only possible with re-order of updateView1SpriteStrip and configureBlit1
+//                               lda #1				//				
+//                               sta BlankStrips_zp		// blank the other player strip (done by setting pointer to blank in irq-driven speedcode generator)
+			       		       
 			       lda TeleportalMode           
                                eor #$02                     
-                               beq !L1EEA+                  // if = 2, portal has moved in map and now ready to move player coordinates
+                               beq !L1EEA+              	// if = 2, portal has moved in map and now ready to move player coordinates
                                jmp !L1F11+                  
+             
                                                          
 !L1EEA:                                                                                
 !do_jump:
+                               lda #1				// **** TEST				
+                               sta BlankStrips_zp
+
 	                       ldx TeleportalY              
                                lda TeleportalX              
-	                       jsr MOVE_PLAYER_TO_TELEPORT_EXIT 		// it's important that animation is in "blank" phase when this is called
-                               lda #$00                     			// else shape data in opponent view's strip will not be blanked before Y jumps
-                               ldx PlayerIndex_zp      	//need to restore X finally     
+	                       jsr MOVE_PLAYER_TO_TELEPORT_EXIT // it's important that animation is in "blank" phase when this is called
+                    						// else shape data in opponent view's strip will not be blanked before Y jumps	
+								// do not force blitY12 here, will result in blanking error									
+                               lda #$00
+                               //ldx PlayerIndexIRQ_zp     	// X already loaded as side effect of jsr MOVE_PLAYER_TO_TELEPORT_EXIT
                                sta TryingToMoveFlag,x       
                                lda #$03                     
                                sta TeleportalMode           
                                lda #$09                     
                                sta $f1                      
-                               lda #$0d                     			   // change anim sequence to exiting portal
+                               lda #$0d                     	 // change anim sequence to exiting portal
                                sta $f0                      
-                               lda #TeleportTimeDelay2	//#$3c                     // control lockout delay countdown was $3c
-                               //ldx PlayerIndex_zp           
+                               lda #TeleportTimeDelay2	//#$3c   // control lockout delay countdown was $3c
+                               //ldx PlayerIndexIRQ_zp           
                                sta PlayerDelayCountdown,x   
                                rts		//internal jmp !L1F18+                  
                                                          
 !L1F11:                        lda #$0b                     
-                               //ldx PlayerIndex_zp         // path to here has not destroyed X  
+                               //ldx PlayerIndexIRQ_zp      	// path to here has not destroyed X  
                                sta NonMoveAnimSeq,x         	// is this the "done" flag?
 
 !L1F18:                        rts                          
@@ -1978,53 +2000,52 @@ blank:                         lda (temp3),y               	// player shape
 // Routine that reads the joystick bit registers which were set either by joystick motion or by the automated player (AI)
 // control, and translates it into motion and animation of the player sprites. 
                                                          
-EXECUTE_PLAYER_AI_MOTION:      ldx PlayerIndex_zp           
-                               lda PlayerJoystickBits,x     
+EXECUTE_PLAYER_AI_MOTION:      //ldx PlayerIndexIRQ_zp    	// now requiring this to be loaded by caller to save cycles with masking implemented below    
+                               lda PlayerJoystickBits,x
+                               ora Player1JoystickMask_zp,x  	//5 extra cycles     
                                sta $f3                      
                                lda #$01                     
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                sta TryingToMoveFlag,x       
-                               //ldx PlayerIndex_zp  		// joystick bits into $f3
+                               //ldx PlayerIndexIRQ_zp  	// joystick bits into $f3
                                         
-                               lda PlayerControlMode,x      // 0=human, 1=AI, 2=AI in zombie mode
+                               lda PlayerControlMode,x     	// 0=human, 1=AI, 2=AI in zombie mode
                                eor #$02                     
                                bne !CHECK_IF_ALIVE+                  
-                               jmp !CHECK_IF_NONMOVE+       // if already zombie don't need to check if alive          
+                               jmp !CHECK_IF_NONMOVE+  		// if already zombie don't need to check if alive          
                                                          
-!CHECK_IF_ALIVE:             //ldx PlayerIndex_zp           // if human check if still alive
+!CHECK_IF_ALIVE:             //ldx PlayerIndexIRQ_zp           // if human check if still alive
                                lda PlayerLifeForce,x        
                                beq !IS_DEAD+                  
-                               jmp !CHECK_IF_NONMOVE+        // else skip being dead stuff
+                               jmp !CHECK_IF_NONMOVE+       	 // else skip being dead stuff
                                                          
-!IS_DEAD:                      lda $f1                      // if dead check $f1=motion state
-                               eor #$07                     // I think this is check if in urn, reanimating
+!IS_DEAD:                      lda $f1                   	// if dead check $f1=motion state
+                               eor #$07            		// I think this is check if in urn, reanimating
                                bne !L1F46+                  
-                               jmp !L1F54+                  // check/service death delay
+                               jmp !L1F54+                	// check/service death delay
                                                          
-!L1F46:                        lda SoundStateLo_zp 	
-                               ora #$80                     
-                               sta SoundStateLo_zp 		//set bit 7 of the motion/sound state register
+!L1F46:                       
                                lda #$09                     
 dead:                          sta $f0                      	// sound effect state
                                lda #$07                     
                                sta $f1                      	// motion state
 
 !L1F54:                        lda #$00                     
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                cmp PlayerDelayCountdown,x   
                                bcc !L1F60+           		// branch if delay counter > 0       
                                rts	//jmp !L1F6D+           //internal       
                                                          
-!L1F60:                        sec                          // decrement delay counter and exit
-                               //ldx PlayerIndex_zp           
+!L1F60:                        sec                        	// decrement delay counter and exit
+                               //ldx PlayerIndexIRQ_zp           
                                lda PlayerDelayCountdown,x   
                                sbc #$01                     
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                sta PlayerDelayCountdown,x   
 !L1F6D:                        rts                          //internal
                                                          
 !CHECK_IF_NONMOVE:             lda #$00                     //check if player is in a non-move sequence like teleporting or being stunned
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                cmp NonMoveAnimSeq,x         
                                bcc !L1F7A+                  
                                jmp !L1F7D+                  
@@ -2040,7 +2061,7 @@ dead:                          sta $f0                      	// sound effect sta
                                bne !L1F8D+                  
                                jmp !L1FAE+                  
                                                          
-!L1F8D:                        ldx PlayerIndex_zp           //if in a nonmove sequence, check if it is over
+!L1F8D:                        ldx PlayerIndexIRQ_zp           //if in a nonmove sequence, check if it is over
                                lda PlayerDelayCountdown,x   
                                beq !L1F97+                  
                                jmp !L1FA0+                  
@@ -2051,10 +2072,10 @@ dead:                          sta $f0                      	// sound effect sta
                                jmp !L1FAE+                  
                                                          
 !L1FA0:                        sec                          
-                               ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp         // already loaded at !L1F8D
                                lda PlayerDelayCountdown,x   
                                sbc #$01                     
-                               //ldx PlayerIndex_zp           
+                               //ldx PlayerIndexIRQ_zp           
                                sta PlayerDelayCountdown,x   
                                rts                          //internal
                                                          
@@ -2079,10 +2100,8 @@ dead:                          sta $f0                      	// sound effect sta
                                lda #$10                     
                                ldy #$00                     
                                sta ($ae),y		// initialize the jump sequence counter
-                                                 
-                               lda SoundStateLo_zp 
-                               ora #$04                     
-                               sta SoundStateLo_zp	//set the motion/sound state register bit 2
+
+			      				 // sound was here, in new architecture handle this sound in anim routine
                                jmp !L2004+                  
                                                          
 !L1FDE:                        lda $f3                     //check joystick bits 
@@ -2103,9 +2122,7 @@ dead:                          sta $f0                      	// sound effect sta
                                ldy #$00                     //as above, initialize the jump sequence counter
                                sta ($ae),y 
                                                 
-                               lda SoundStateLo_zp 
-                               ora #$04                     
-                               sta SoundStateLo_zp	//set the motion/sound state register bit 2
+			       				// sound was here, handle now in anim routine
                                
 !L2004:                        lda $f1                      
                                eor #$03                     
@@ -2279,13 +2296,21 @@ dead:                          sta $f0                      	// sound effect sta
                                                          
 PLAYER_MAIN_MOTION_SEGMENT:   //jmp !L24D1+                  
                                                          
-!L24D1:                        sta !whichPlayer-               
-                               lda !whichPlayer-               
-                               sta PlayerIndex_zp
+!L24D1:                        //sta !whichPlayer-               
+                               //lda !whichPlayer-               
+                               //sta PlayerIndexIRQ_zp	   // now done outside at caller
+
+#if PAUSEKEY
+!PAUSE_MOTION:			// prevent player motion when paused
+			       lda pauseKey_zp
+			       bne !n+
+			       rts
+!n:
+#endif
 
 // need these bits to set up the zp pointers to player, view, and animation table
                                            
-                               lda PlayerIndex_zp           
+                               lda PlayerIndexIRQ_zp           
                                asl                         // player idx*2 
                                php                         // C to stack
                                clc                          
@@ -2293,9 +2318,9 @@ PLAYER_MAIN_MOTION_SEGMENT:   //jmp !L24D1+
                                sta $ae                     // ptr to ptr in animBase with offset 2 = animBase of player 1 or player 2...so $ae = $4a or $4c, lsb of ptrToPlayerAnimBase
                                lda #$00                     
                                rol                         // rol in the carry 
-                               plp                         // recover carry from the result of asl PlayerIndex_zp 
+                               plp                         // recover carry from the result of asl PlayerIndexIRQ_zp 
                                adc ptrAnimBaseSelect+1      
-                               sta $af			   // $ae,f contains the ptrToPlayer1AnimBase $8034 or ptrToPlayer2AnimBase $803b as selected by PlayerIndex_zp
+                               sta $af			   // $ae,f contains the ptrToPlayer1AnimBase $8034 or ptrToPlayer2AnimBase $803b as selected by PlayerIndexIRQ_zp
                                                      
                                ldy #$01                     
                                lda ($ae),y                 // Y=1 
@@ -2304,7 +2329,7 @@ PLAYER_MAIN_MOTION_SEGMENT:   //jmp !L24D1+
                                lda ($ae),y                  
                                sta PlayerSpriteCtrlBase_zpw // set the row in the animation table from which to pull the sequence
                                  
-	                       lda PlayerIndex_zp           
+	                       lda PlayerIndexIRQ_zp           
                                asl                          
                                php                          
                                clc                          
@@ -2323,7 +2348,7 @@ PLAYER_MAIN_MOTION_SEGMENT:   //jmp !L24D1+
                                sta PlayerCoordBase_zpw	// set the zp pointer to the player coordinate base
                                
                                       
-                               lda PlayerIndex_zp           
+                               lda PlayerIndexIRQ_zp           
                                asl                          
                                php                          
                                clc                          
@@ -2346,7 +2371,7 @@ PLAYER_MAIN_MOTION_SEGMENT:   //jmp !L24D1+
 		// Since I appear to be starved for rastertime I'm going to avoid the indirect addressing the original code relies on so much
 		// Need to do the tile-coordinate conversions here because the various positioning routines rely on them.
 
-				lda PlayerIndex_zp
+				lda PlayerIndexIRQ_zp
 				bne !player2+
 			
 !player1:			// convert player 1 global 16-bit coordinates to map tile space
@@ -2486,7 +2511,7 @@ PLAYER_MAIN_MOTION_SEGMENT:   //jmp !L24D1+
 		
 !tilesDone:		
                             
-!L265D:                        ldx PlayerIndex_zp           
+!L265D:                        ldx PlayerIndexIRQ_zp           	// X still has some coordinate in it
                                lda PlayerShapeSelect,x      	// the current shape 0=normal, 1=falling, 2=climbing --> upper nybble of shape selector
                                sta $f1        
                                             
@@ -2501,7 +2526,7 @@ PLAYER_MAIN_MOTION_SEGMENT:   //jmp !L24D1+
 
 
                                lda #$00                     
-                               //ldx PlayerIndex_zp         // +++ still in X from above
+                               //ldx PlayerIndexIRQ_zp         // +++ still in X from above
                                cmp PlayerControlMode,x      // 0=human, 1=AI, 2=AI in zombie mode
                                //bcc !L267E+
 			       bcc !L269A+
@@ -2512,7 +2537,7 @@ PLAYER_MAIN_MOTION_SEGMENT:   //jmp !L24D1+
                                jmp !L269A+                  
 */
                                                          
-!L2684:                        lda PlayerIndex_zp           	// else, get input from sticks and triggers
+!L2684:                        lda PlayerIndexIRQ_zp           	// else, get input from sticks and triggers. 		OPT: could be txa
                                //jsr GET_JOYSTICK		// inline the now modified joystick routine here, to get it out of block2
 !GET_JOYSTICK:                                        
                                beq !GET_PLAYER1+            
@@ -2520,7 +2545,7 @@ PLAYER_MAIN_MOTION_SEGMENT:   //jmp !L24D1+
                                                          
 !GET_PLAYER1:                  lda CIAPRA                   
                                and #$0f
-                               ora Player1JoyMask:#$00                     
+                               //ora Player1JoyMask:#$00                     
                                sta PlayerJoystickBits
 
 	                       lda #%00010000		//trigger
@@ -2536,7 +2561,7 @@ PLAYER_MAIN_MOTION_SEGMENT:   //jmp !L24D1+
                                                          
 !GET_PLAYER2:                  lda CIAPRB                    
 			       and #$0f
-			       ora Player2JoyMask:#$00                          
+			       //ora Player2JoyMask:#$00                          
                                sta PlayerJoystickBits+1  
                                
                                lda #%00010000		//trigger
@@ -2549,10 +2574,11 @@ PLAYER_MAIN_MOTION_SEGMENT:   //jmp !L24D1+
 			       sta PlayerJoyTrigger+1                                                                                                                                     
 !EXIT:                                                                
                                      
-!L269A:                        jsr EXECUTE_PLAYER_AI_MOTION 	// do the motion corresponding to the joystick registers
+!L269A:                        jsr EXECUTE_PLAYER_AI_MOTION 	// in v15 this now requires PlayerIndex in X
+								// do the motion corresponding to the joystick registers; X can come back in aribtrary state
 
                                lda $f1                      	// I believe the motion routine updates $f1 e.g. if the motion state has transitioned from walking to standing etc.
-                               ldx PlayerIndex_zp           
+                               ldx PlayerIndexIRQ_zp           
                                sta PlayerShapeSelect,x      	// update to match the new shape
                                
                                lda PlayerSpriteCtrlBase_zpw  

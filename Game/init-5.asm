@@ -10,6 +10,7 @@
 	2023-12-23	v3 added extra leading zero to scores to match original game
 	2023-12-26	veto display of player 2 when in 1 player mode
 	2024-01-05	v4 changed a few things for proper re-init after victory
+	2024-11-21	initi new SoundStack
 
 */
 
@@ -94,6 +95,7 @@ initialize:
 	sta ZombieOffset2_zp
 	sta animCtr_zp			// generates charset pointer from frame count
 	sta frameCtr_zp 		// counts how many times the irq handler reached top of frame
+	sta SoundStackPtr_zp		// zero sound stack
 	
 //................................................................................................................. 	
 
@@ -133,10 +135,11 @@ ConfigSIDsound:
 	sta SIGVOL		// volume off
 	sta fxIteration1_zp	// clear sound iteration
 	sta fxIteration2_zp	// clear sound iteration
-	sta $cb			// clear sound select register 1
-	sta $cc			// clear sound select register 2
+	sta p1Sound_zp		// clear sound select register 1
+	sta p2Sound_zp		// clear sound select register 2
 	sta soundPlaying1_zp
 	sta soundPlaying2_zp
+	sta SoundStackPtr_zp
 
 
 	lda #0			// fixed duty cycle 50% or something, atari I think has fixed 50% dc

@@ -1,6 +1,7 @@
 /*  Some macros for interrupt-driven VIC manipulations, delays, numeric processing etc.
 	2023-01-31
 	2023-11-28  bugfix, WASTE_CYCLES_X() implemented incorrect number of cycles for certain arguments
+	2024-11-30  v3 add hermit stabilizer
 */
 
 .macro PRESTABILIZE_RASTER_AXS(nextIrqAddr) {
@@ -278,5 +279,37 @@ done:	cld
 !w:					//wait until msbit of raster is clear
 	bit $d011
 	bne !w-	
+}
+
+
+
+.macro HERMIT_INITIALIZE_AY() { // sync raster with CIA for stabilizer
+!sync:		      // hermit's original comments
+	cmp $d012     //scan for begin rasterline (A=$11 after first return)
+	bne *-3       //wait if not reached rasterline #$11 yet
+	ldy #8        //the walue for cia timer fetch & for y-delay loop         //2 cycles
+	sty $dc04     //CIA Timer will count from 8,8 down to 7,6,5,4,3,2,1      //4 cycles
+	dey           //Y=Y-1 (8 iterations: 7,6,5,4,3,2,1,0)                    //2 cycles*8
+	bne *-1       //loop needed to complete the poll-delay with 39 cycles    //3 cycles*7+2 cycles*1
+	sty $dc05     //no need Hi-byte for timer at all (or it will mess up)    //4 cycles
+	sta $dc0e,y   //forced restart of the timer to value 8 (set in dc04)     //5 cycles
+	lda #$11      //value for d012 scan and for timerstart in dc0e           //2 cycles
+	cmp $d012     //check if line ended (new line) or not (same line)
+	sty $d015     //switch off sprites, they eat cycles when fetched
+	bne !sync-    //if line changed after 63 cycles, resynchronize it!
+}
+
+
+.macro HERMIT_STABILIZE_A() { 	//hermit version cia timer sync to remove jitter
+ 	lda $dc04			//4
+!ckcia:	eor #$7				//2	 if $dc04 ever = 8 this explodes, because the jump becomes +$0f.  this code needs to be placed with absolute timing such that it never has the condition $dc04=8
+	sta *+4				//4
+	bpl *+2				//3	13 cycles
+
+	cmp #$c9			//3 	improved? delay ladder...12
+	cmp #$c9			//3 
+	bit $ea24			//3
+	bit $ea24			//3
+					// minimum 18 cycles, maximum 25	
 }
 	
