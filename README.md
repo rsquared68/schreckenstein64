@@ -2,6 +2,7 @@
 
 This project is a study of Peter Finzel’s superb two-player head-to-head jump and run dungeon explorer for the Atari line of 8-bit home computers and my attempt to accurately port it to the Commodore 64. 
 
+
 ## Compatibility 
 
 Since some users of RC1 have reported issues that are not actually bugs in the game but related to compatibility with various emulation setups, let me say what I know right now about compatibility:  tl;dr, real machines and VICE 3.7+ work well for me and among my immediate friends and colleagues.
@@ -19,6 +20,7 @@ The main issues that are observed will be graphical glitches in or around the st
 5) CIA revision (old/new) shouldn’t matter.  While some of the code sections use timer stabilization to stay aligned with raster X, there is enough slop for it to be OK.  I have tested on real hardware with both CIA types and did not see a problem, VICE 3.7+ also had no issue when switching CIAs.  Likely, this would result in a complete crash because the stabilizer is derived from Hermit’s shortest-possible approach and does not handle the “$dc04 equals 8” edge-case either for those who know it.  The application here doesn’t need more because it only has to handle a few cycles of variability for page crossings of a couple of indexed loads, and entry is timed to give plenty of margin. (Agreed it's dangerous and always needs checking when adjusting the code.)
 
 6)  At least one scene production (a packed and trained version) has one or more defects.  One defect is related to the player 2 sprite pointer indirection in the animation state machine; initialization probably didn’t happen properly in that "crack."  I was impressed by the packing because I’m not experienced there and the file size and loading times were impressive to me.  However if any code or data was relocated there can be problems because the page-boundary alignment is critical to the timing of many sections of the code.  Also if the production’s loader/depacker doesn’t re-initialize zeropage and the variables in the $8000 region as well as re-sync the CIA timers to the raster that my code expects, bad things will happen.
+
 
 
 
