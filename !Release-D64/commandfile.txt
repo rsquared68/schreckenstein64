@@ -1,0 +1,13 @@
+.\Load-Control\load-control-3.prg SCHRECK-64
+.\Game\01.prg 01
+.\Game\Sound\02.prg 02
+.\Game-Assets\exo3\10.prg 10
+.\Game-Assets\exo3\20.prg 20
+.\Game-Assets\exo3\11.prg 11
+.\Game-Assets\exo3\21.prg 21
+.\Game-Assets\exo3\12.prg 12
+.\Game-Assets\exo3\22.prg 22
+.\Game-Assets\exo3\13.prg 13
+.\Game-Assets\exo3\23.prg 23
+.\Game-Assets\exo3\14.prg 14
+.\Game-Assets\exo3\24.prg 24

@@ -99,6 +99,7 @@ done:
 }
 */
 
+/*
 .macro SAVEPLAYERINDEX_A() {	// saves subroutine parameters across irq events
 		lda PlayerIndex_zp
 		sta keepPlayerIndex_zp
@@ -108,7 +109,7 @@ done:
 		lda keepPlayerIndex_zp
 		sta PlayerIndex_zp		
 		}
-		
+*/		
 
 .macro STEPCHARSETANIM_AX() {	// animate via character set pointer every 8 frames
 	inc frameCtr_zp		//5
@@ -135,5 +136,14 @@ done:
 !skip:
 		}
 		
+
+.macro CHKPAUSE_A(zp_add) {	// look for shift key
+	lda #$fd		//2 connect bit 1 / keyboard row 1 for left-shift/shift-lock
+	sta CIAPRA		//4
+	lda CIAPRB		//4
+	and #$80		//2 bit 7 is shift
+	sta zp_add		//3
 		
-	
+	lda #$ff		//2 restore joystick
+	sta CIAPRA		//4							21 cycles
+		}	

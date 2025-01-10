@@ -8,9 +8,11 @@
 
         // Constants
 
+/* 				       //not used
 .const LOAD_KERNAL     = $00           //loaderMode: Load using Kernal, no IRQs
 .const LOAD_FAKEFAST   = $01           //loaderMode: Load using Kernal, IRQs allowed
 .const LOAD_FAST       = $ff           //loaderMode: Load using custom serial protocol
+*/
 
 .const SPR_TOP_SAFETY  = 4
 .const SPR_BOTTOM_SAFETY = 21

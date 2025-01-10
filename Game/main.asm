@@ -9,8 +9,8 @@
 				IRQ-Handlers/viewport-irqs etc. Coarse scrolling of the viewports and scrolling of the opponent sprites
 				is implemented with speedcode dynamically generated in this handler.  The original code, gameplay design,
 				and graphical assets are used with the written permission of Peter Finzel.  The remainder of the code is
-				Copyright 2024 Robert Rafac, but may be freely reused in accordance with the license.txt file included in
-				the root path of this package.
+				Copyright 2024,2025 Robert Rafac, but may be freely reused in accordance with the license.txt file included
+				in the root path of this package.
 
 				The loader code is more or less taken verbatim from Covert Bitops Loadersystem Copyright (c) 2002-2023
 				Lasse Öörni https://github.com/cadaver/c64loader and is incorporated here under the terms of the license
@@ -18,62 +18,40 @@
 
 				Kick Assembler v5.x  
 				
-
 //                .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
 
 
 	2023-01-14	Initial map representation demonstration work with only tile scolling
-
 			[see earlier files for complete version history]
+
+	2024-01-07	schreck-64 RC1	DEPRECATED	First release candidate
+
+	2024-12-07	schreck-34	DEPRECATED	New sound scheme, better teleport blanking, remove timer-based stabilizers, fixes
+							for AI player getting trapped (map changes, Y-coordinate limits)
+
+	2024-12-17	schreck-35	DEPRECATED	enhancement of strip blank (required irq retime), pause feature, improved deglitch
+
+	2025-01-08	schreck-36	DEPRECATED	exomized!, makefile
+
+	2025-01-08	schreck-37	DEPRECATED	optimize main service loop for speed
+
+	2025-01-10	shreck64-100%	BASELINE	Final (?) release
+
 	
-
-
-	2024-01-05	schreck-31	BASELINE for RC1
-
-			Integrated tune player; subroutine code integrated and located following the sound fx players.
-			Correct behavior when game completed, goes from victory screen back to option/tune screen.
-			Fixed bug: Spiders have never worked, because I always passed A=game level=0 to ENEMIES_FOR_LEVEL
-			so every level had the number and type of enemies configured for level 0.  Improved irq startups
-			after new level load so it always occurs in the same place (trigger msBit).  Fixed bug in COPY_SCORES
-			as it was shifted by 1 byte in both read and write.  Removed keypress bell because it conflicts
-			with tune.  Blanked AI score display like original game, updated COPY_SCORES to make it look right
-			when switching back to 2 player mode. Removed keypress bell because of conflict with tune player.
-			Added flag animation. New note screens, added loader border color changes. Added thunder sound effect
-			to victory screen.
-
-			All the changes moved code around substantially.  The deglitch-strips routine is time critical
-			so I moved it to the end of viewport-irqs which rarely moves due to the fact that the start is
-			page-aligned. Otherwise, an issue can appear for the very sensitive map1y=6 in SB2, either the
-			middle will glitch or the last sprite in the strip is not configured in time.
-
-			Next:
-			Animation when bell tolls
-			Sound effect gating improvement
-			Better joy/key deconflicter possible?
-			Key debounce interval a little long?
-			Reduce number of enemies because spiders make game very difficult on levels 4/5?
-			Revisit memory layout
-			irq handlers still need to start at $a001?
-
-			Bug?  In at least one example of forcing level promotion, teleporter not working on level 5
-
-
-
-	2024-01-07	schreck-64 RC1	First release candidate
-
-			Organize a bit for repo.  Remove USELOADER #define as it cannot work any longer.
-
-
 //                .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
 */ 
 
 
 // preproc switches
 
+#define PAUSEKEY		// shift-lock pause feature
+#undef TRAPSTRIP		// implement breakpoints at trap1 and trap2 if strip blit displaces more than a certain number of rows
+#define WAITBURST		// after burst plotted, wait for one frame to be sure that view has had its blit cycle
+#undef SLOWCHIRP		// reduce frequency of bat chrip
 #undef RASTERTIME		// display rastertime in border for non-statusbar sections
 #undef TILETRACKER		// diagnostic to track tileXY on map when turned on
 #define	DOUBLEDOWN		// allows double stepping in y in some parts of code (other parts may still be commented out)
-#define NOHALFSTEP		// turns off alternate-viewport xscroll half-stepping
+#define NOHALFSTEP		// turns off alternate-viewport xscroll half-stepping; ***broke this feature so need to tweak map memcpy
 #undef USEFRAMES		// switches to open rectangular frames for statusbar sprites for diagnostic purposes
 #undef COLLISIONBRK		// attempted debug feature does brk instruction on irq exceeded alloted rastertime
 
@@ -82,11 +60,11 @@
 
 #import "../Includes/vicBank.asm"
 #import "../Includes/mapping.asm"
-#import "../Includes/r2-macros-2.asm"
-#import "../Includes/labels-8.asm"
+#import "../Includes/labels-13.asm"
+#import "../Includes/r2-macros-3.asm"
 #import "schreck-macros.asm"
 
-#import "../Load-Control/load-control.sym"
+#import "../Load-Control/load-control-3.sym"	// main here calls stuff in loader namespace so get symbols
 
 
 //================================================================================================================
@@ -112,7 +90,7 @@
 
 .label 	screenRam1 = vicMem1.get("VIDMAT_ABS")
 .label 	vicmem1 = vicMem1.get("VICMEM_MASK")
-.label 	charData = vicMem1.get("CHARMEM_ABS")
+.label 	charData = vicMem1.get("CHARMEM_ABS")		// Chars in labels.asm should match ($4000)
 
 .label 	screenRam2 = vicMem2.get("VIDMAT_ABS")
 .label 	vicmem2 = vicMem2.get("VICMEM_MASK")
@@ -146,8 +124,8 @@
 
 //         ______--------`````````` Let's go! '''''''''''--------_______
 
+.pc = loader.Game "Main"	//$1000
 
-.pc = $1000 "Main"
 //.................................................................................................................
 
 	// Launch and re-launch entry point.  Timer, memory banking configuration, and raster-irq stuff set up
@@ -208,45 +186,42 @@ OneOrTwoPlayer:
 
 //.................................................................................................................
 
-	// SET UP INTERRUPT TRIGGERS FOR GAME'S GRAPHIC KERNEL
-	                                      	
-line0:  lda #irqLine_Work2   // rasterline at which to launch the irq handler 
-        sta RASTER		
-        lda #$17			//2 	there can still be badlines after line $31 depending on YSCROLL, even though text is hidden until line $37 !!!
-	sta SCROLY			//4 	set this to clear bit 7 (msbit rasterline) and prevent spurious triggers on badlines
-        
-            
-//.................................................................................................................        
-
+	
 	// map and tile loader
 
 nextLevel:
+        
 	jsr SILENCE_SID
 
 	//turn off sprites
 	lda #0	
-	sta $d015	
+	sta $d015
 		
 	jsr loadScreen			// draws and colors loadscreen for this level. assumes no interrupts are active!
 					// needs the alpha tiles from file $20
 
-	// prototyping
+	// load the map and tiles for whatever level this will be
 	lda GameLevel_gbl
 	clc
 	adc #$10
-	jsr loader.LoadUnpacked		// e.g. "10" for level 1 map
+	ldx #<loader.Map		//load address
+	ldy #>loader.Map
+        jsr loader.LoadExomizer3Raw     //Load file
 	bcc !n+          	 	//Error if carry set
 	jmp loader.LoadError
 !n:	
 	lda GameLevel_gbl
 	clc
 	adc #$20
-	jsr loader.LoadUnpacked		// e.g. "21" for level 1 charset
+	ldx #<loader.Chars		//load address
+	ldy #>loader.Chars
+        jsr loader.LoadExomizer3Raw     //Load file
 	bcc !n+          	 	//Error if carry set
 	jmp loader.LoadError
 !n:
 
-	// patch alpha charset with sprite data temporarily
+
+	// patch alpha charset with sprite data
 	ldx #$3f
 !lp:
 	lda spieler2patch,x
@@ -296,10 +271,12 @@ nextLevel:
 	
 	//housekeeping from last level
 	sta LoadLevelTrigger
+	//turn joysticks back on if they were turned off at end of level. Joystick bit overwrite is handled near where interrupt handler is stopped at level end
+	sta Player1JoystickMask_zp
+	sta Player2JoystickMask_zp
+	//init cycle state register; AFAIK doesn't matter 0/1 because
+	//PlayerIndex ends up getting bounced around independently of state now
 	sta state_zp
-	//turn joysticks back on if they were turned off at end of level
-	sta Player1JoyMask
-	sta Player2JoyMask
 	
 initColors:
 	// schreck mcm map tile color definitions per level
@@ -374,107 +351,50 @@ initColors:
 	lda #$ff
 	sta $d015				// turn on all sprites
 	
-	lda #$00
-	sta PlayerIndex_zp			// run this once or weird stuff is in zp temp pointers causing a sound to get played
+	//ensure zp pointers are set up, else on start memory can be corrupted (e.g. loader code gets bombed)
+	lda #$00				// run this once or weird stuff is in zp temp pointers causing a sound to get played, coordinates will be assigned wrong, etc.
+	sta PlayerIndexIRQ_zp
 	jsr PLAYER_MAIN_MOTION_SEGMENT		// when interrupt is first started at the bottom of the frame						
-	inc PlayerIndex_zp			
+	inc PlayerIndexIRQ_zp			
 	jsr PLAYER_MAIN_MOTION_SEGMENT
+	
+	// draw chars for score, life points, objektiv, stufe
+	jsr UPDATE_SCREEN_SCORE
+	jsr UPDATE_SCREEN_LIFE
+	jsr UPDATE_SCREEN_OBJECTIVES
+	jsr UPDATE_SCREEN_LEVEL
 
+//.................................................................................................................
 
-//.................................................................................................................	
+//					Ready to start main game interrupt handler
 
+line0:  lda #irqLine_Work2   		// rasterline at which to launch the irq handler 
+        sta RASTER		
+        lda #$17			//2 	there can still be badlines after line $31 depending on YSCROLL, even though text is hidden until line $37 !!!
+	sta SCROLY			//4 	set this to clear bit 7 (msbit rasterline) and prevent spurious triggers on badlines
+            	
 	SET_6502_IRQ_VECTOR_A(irq_Work2)
-        
-        lda #$81        			// enable raster interrupts for game display note sei should still be in effect
+        lda #$81        		// enable raster interrupts for game display note sei should still be in effect
         sta IRQMSK
+	lsr VICIRQ			// acknowledge any pending raster interrupt serviced
 	
-	lsr VICIRQ				// acknowledge any pending raster interrupt serviced
-	
-	WAIT_UNTIL_RASTERMSB0_A()		// wait until upper part of screen	... need consistent startup of graphic kernel or possible crash	
+	WAIT_UNTIL_RASTERMSB0_A()	// wait until upper part of screen	... need consistent startup of graphic kernel or possible crash	
 	WAIT_UNTIL_RASTERLSB_A($ff)
 	
- 	cli             			// enable interrupts to handle graphics, ready to start game loop!
+ 	cli             		// enable interrupts to handle graphics, ready to start game loop!
 
 	//         ######################## GAME GRAPHIC, SOUND, AND MOTION KERNEL INTERRUPTS ACTIVE ###########################  
 
 	lda #%00001111				//restore SID sound if it had been turned off, ok to do once irq handler for SID is active
 	sta $d418				//volume and filter type, voice 3 enab
 
-//.................................................................................................................
 
+
+//.................................................................................................................
+//	Loop that runs original Schreckenstein play engine in blocks 0, 1, and 2
 //.................................................................................................................
 
 gameServiceLoop:
-	
-	// Put numeric values in statusbars for life counter, score, level, and tasks to complete
-
-	// do life
-	lda #$1e
-	sta scoreScreenLoc
-	lda #$7c
-	sta scoreScreenLoc+1
-	lda PlayerLifeForce
-	sta num
-	ldy #(3-1)		// 3 decimal digits 
-	jsr Scrn16toDec
-
-	lda #$d6
-	sta scoreScreenLoc
-	lda #$7d
-	sta scoreScreenLoc+1
-	lda PlayerLifeForce+1
-	sta num
-	ldy #(3-1)		// 3 decimal digits 
-	jsr Scrn16toDec
-
-	// do score
-	lda #$1e-11
-	sta scoreScreenLoc
-	lda #$7c
-	sta scoreScreenLoc+1
-	lda L060d	//$60d
-	sta num
-	lda L060d+1	//$60e
-	sta num+1
-	ldy #(4-1)		// 4 decimal digits 
-	jsr Scrn16toDec
-
-	// NEED TO ADD:  if one player, don't display score for AI
-	// temporary hack:  just zero the AI's score, reliable because check for game over happens before main engine loop
-	lda NumPlayers
-	beq !n+			// if = 0, player 2 is human so branch
-	lda #0
-	sta L060f		
-	sta L060f+1		// else take away the AI score so it doesn't contribute to anything
-	jmp !skip+		// and skip writing to the screen
-!n:	
-
-	lda #$d6-11
-	sta scoreScreenLoc
-	lda #$7d
-	sta scoreScreenLoc+1
-	lda L060f	//$60f
-	sta num
-	lda L060f+1	//$610
-	sta num+1
-	ldy #(4-1)		// 4 decimal digits 
-	jsr Scrn16toDec
-
-!skip:	
-	//do level "S"
-	lda GameLevel_gbl
-	clc
-	adc #1
-	ora #$10
-	sta $7c1e+7
-	//do objectives (combined tasks) "O"
-	lda NumberOfTasksRemaining			// this is actually number of tasks needed for the level
-	sec
-	sbc CombinedTasksComplete
-	ora #$10
-	sta $7dd6+7
-
-// ......................................................................
 
 	// check if level completed or game over and handle reload/recycle
 
@@ -484,18 +404,24 @@ gameServiceLoop:
 	// yes, prepare to recycle
 
 	WASTE_CYCLES_X(16*63)	// wait some time with interrupts still enabled to ensure sound had a chance to load
-
-	// wait for level complete sound to end before stopping interrupts
+	lda #0			// let sounds play with irq active; otherwise sounds on stack will get played at start of next level
+	sta SoundStackPtr_zp
 !lp:	
 	lda soundPlaying1_zp 
 	ora soundPlaying2_zp 
 	bne !lp-
-
+		
+	// stop irq handler 
+	
 	sei
 	lda #$f0        	// disable raster interrupts
 	sta $d01a 		// ICR
 
-!isGameCompleted:
+	lda #0			// allow input again
+	sta Player1JoystickMask_zp
+	sta Player2JoystickMask_zp
+
+!isGameCompleted:		// all 5 levels successfully completed!
 	inc GameLevel_gbl
 	lda GameLevel_gbl
 	cmp #5
@@ -507,9 +433,9 @@ gameServiceLoop:
 	jmp nextLevel		// go on to next level
 
 !isGameOver:
-	lda PlayerControlMode  // check if game over
+	lda PlayerControlMode   // check if game over
 	cmp #2
-	bne !nope+		// player 1 is still alive
+	bne !ContinueLevel+ 	// player 1 is still alive
 	
 	// player 1 dead
 	eor PlayerControlMode+1
@@ -517,20 +443,18 @@ gameServiceLoop:
 
 	// player 1 dead but player 2 alive
 	lda NumPlayers
-	beq !nope+		// 0=2 player game so let player 2 contine
+	beq !ContinueLevel+	// 0=2 player game so let player 2 contine
 
+	// game over so handle it
 !gameOver:
 	// zombie delay counter can end at $0, $1, $fe, etc. so not reliable
 !wait:	
 	sei			// stop the interrupts!
 	lda #$f0       		// disable raster interrupts
 	sta $d01a 		// ICR
-	lsr VICIRQ		// acknowledge anything pending
-	
 	//kill sprites
 	lda #0
 	sta $d015
-	
 	// make junk that is going to load into this screen's memory invisible
 	ldx #250
 	lda #BLACK							
@@ -542,35 +466,31 @@ gameServiceLoop:
 	dex
 	bne !lp-
 		
-	jsr SILENCE_SID
-	
+	jsr SILENCE_SID	
 	jsr COPY_SCORES		// overwrite last game's score text in buffer used by attract-screens
 	jsr UPDATE_HIGHSCORE	// determine if new highscore and update as done for last game's scores
+	jmp loader.endGame	// endGame in loader
 	
 	
-	jmp loader.endGame	//endGame in loader
-	
-!nope:
+!ContinueLevel:			// continue level in play
 // ......................................................................
 
-	// do actual game service
-
+	// do actual game engine service by calling routines that update the motion of enemies and execute the game mechanics
 	ldx #0
 !lp:	
-
 	txa
 	pha
 	
-	jsr CREATE_DESTROY_ENEMIES_WEAPONS
-	jsr JUMP_7 //LEVELS134	// normally vectored to via JUMP_7,  this makes traps and teleporters work ... I don't see anything configuring JUMP_7 and it's static in the C64 blocks
+	jsr CREATE_DESTROY_ENEMIES_WEAPONS	// move the enemies and propagate thrown weapons
+	jsr JUMP_7 //LEVELS134			// this makes traps and teleporters work ... I don't see anything configuring JUMP_7 and it's static in the C64 blocks
 
 	pla
 	tax
 		
-	and #3
+	and #3			// only run the main handler mechanics controlling life and other timers once for every 7 enemy/weapon updates
 	bne !skip+		// slow the clocks down. the player delay countdown interacts with the teleporter state so pay attention
-				// on level 1, life decrements every 5s in one-player mode of original game
-				// c64 timed here to be 4.5s using an interval of 7
+				// on level 1, life decrements every 5s in one-player mode of original Atari game
+				// c64 timed here to be 4.56s at block1:lifeDecrement using an interval of 7 (228 frames)
 	txa
 	pha
 	
@@ -580,13 +500,12 @@ gameServiceLoop:
 	tax
 !skip:	
 
-	inx			// here controlling how often the game engine runs relative to the scoretext update, game over checks, etc
-speed:	cpx #80			// timed, this loop is exited at an interval of 0.42s when = 90 decimal, so that's the score update lag.
-				// 
-	bne !lp-		// this setting does not seem to have a major impact on perceived speed, was 60 decimal
+	inx			// here controlling how often the game engine runs relative to the game-over checks, etc
+speed://cpx #80			// now that this loop is a full $ff cycle, timed at around 0.98-1.2Mcycles or around 1-1.3 seconds 				// 
+	bne !lp-		// this setting does not seem to have a major impact on perceived speed
 
-// 0000000000000000000000000000000000000000000000000000000000000000000000
-// tile tracking
+// 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+// tile tracking: debug tool; puts candles on the map to check that player sprites match the map coordinate system
 #if TILETRACKER
 	lda #$10		// bit 4 = play button on datasette
 	bit $01
@@ -607,8 +526,7 @@ speed:	cpx #80			// timed, this loop is exited at an interval of 0.42s when = 90
 	sta (map01_zpw),y
 !n:
 #endif
-// 0000000000000000000000000000000000000000000000000000000000000000000000	  
-// ......................................................................
+// 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000	  
 
 	jmp gameServiceLoop
 
@@ -645,8 +563,8 @@ spieler2patch:
 		.byte $00,$00,$00,$00,$00,$00,$00,$00,$ff,$ff,$ff,$81,$ff,$f8,$c4,$e1
 		.byte $fc,$c4,$d8,$fc,$c1,$f1,$fc,$c5,$e3,$fc,$c5,$c6,$fc,$84,$c0,$f8
 		.byte $ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$0c
-										
-//........................................................................................................................................................
+
+//.........................................................................................................................................................
 
 
 
@@ -654,6 +572,85 @@ spieler2patch:
 //_________________________________________________________________________________________________________________________________________________________
 //_________________________________________________________________________________________________________________________________________________________
 
+
+//.........................................................................................................................................................
+UPDATE_SCREEN_SCORE:	
+		lda #$1e-11
+		sta scoreScreenLoc
+		lda #$7c
+		sta scoreScreenLoc+1
+		lda L060d	//$60d
+		sta num
+		lda L060d+1	//$60e
+		sta num+1
+		ldy #(4-1)		// 4 decimal digits 
+		jsr Scrn16toDec
+	
+		// NEED TO ADD:  if one player, don't display score for AI
+		// temporary hack:  just zero the AI's score, reliable because check for game over happens before main engine loop
+		lda NumPlayers
+		beq !n+			// if = 0, player 2 is human so branch
+		lda #0
+		sta L060f		
+		sta L060f+1		// else take away the AI score so it doesn't contribute to anything
+		jmp !skip+		// and skip writing to the screen
+	!n:	
+	
+		lda #$d6-11
+		sta scoreScreenLoc
+		lda #$7d
+		sta scoreScreenLoc+1
+		lda L060f	//$60f
+		sta num
+		lda L060f+1	//$610
+		sta num+1
+		ldy #(4-1)		// 4 decimal digits 
+		jsr Scrn16toDec
+	
+	!skip:			
+		rts	
+		
+//.........................................................................................................................................................
+UPDATE_SCREEN_LIFE:
+		lda #$1e
+		sta scoreScreenLoc
+		lda #$7c
+		sta scoreScreenLoc+1
+		lda PlayerLifeForce
+		sta num
+		ldy #(3-1)		// 3 decimal digits 
+		jsr Scrn16toDec
+	
+		lda #$d6
+		sta scoreScreenLoc
+		lda #$7d
+		sta scoreScreenLoc+1
+		lda PlayerLifeForce+1
+		sta num
+		ldy #(3-1)		// 3 decimal digits 
+		jsr Scrn16toDec
+		
+		rts
+		
+//.........................................................................................................................................................
+UPDATE_SCREEN_OBJECTIVES:
+		lda NumberOfTasksRemaining	// actually number of tasks needed for the level
+		sec
+		sbc CombinedTasksComplete
+		ora #$10
+		sta $7dd6+7
+		rts
+
+//.........................................................................................................................................................
+UPDATE_SCREEN_LEVEL:
+		lda GameLevel_gbl
+		clc
+		adc #1
+		ora #$10
+		sta $7c1e+7
+		rts
+		
+//.........................................................................................................................................................
 
 num: 	.word 0000 
 pad:	.byte $0
@@ -718,6 +715,9 @@ buflen:
 .byte 0
 PrDec16Tens:
 .lohifill 5, pow(10,i)
+//.........................................................................................................................................................
+
+
 
 
 //_________________________________________________________________________________________________________________________________________________________
@@ -725,15 +725,15 @@ PrDec16Tens:
 
 
 .pc = * "Player Moves"				// new player movement subroutines (player, viewport, sprite)
-	#import "player-moves-5.asm"
+	#import "player-moves-7.asm"
 .pc = * "Update Transformations"		// math for sprite, sprite strip, and viewport positioning
 	#import "update-transformations-12.asm"
-.pc = * "Schreck Block 0"			// original player control, player movement, and sprite animation routines
-	#import "Engine/block0-slim-12.asm"
+.pc = * "Schreck Block 0"			// original player control, player movement, and sprite animation routines; runs in irq
+	#import "Engine/block0-slim-18.asm"
 .pc = * "AI control routines (formerly in block 0)"
-	#import "ai-motion-indep-irq-4.asm"	
+	#import "ai-motion-indep-irq-5.asm"	
 .pc = * "Schreck Block 1"  			// original 26c0-3fe6  movement and map interaction routines
-	#import "Engine/block1-slim-11.asm" 
+	#import "Engine/block1-slim-17.asm" 	// most of game mechanics / engine which runs outside of irq
 .pc = * "Random Number Generator"
 	#import "random-2.asm"
 
@@ -755,7 +755,7 @@ PrDec16Tens:
 // nominally at $7c00
 
 #if USEFRAMES
-	.var SBspriteData = LoadBinary("Game-Assets/sprites/SB-Test-Blank-Frames2.bin")
+	.var SBspriteData = LoadBinary("../Game-Assets/sprites/SB-Test-Blank-Frames2.bin")
 #else	
 	.var SBspriteData = LoadBinary("../Game-Assets/sprites/Proto-game-SB-Full-FullCover4.bin")
 #endif	
@@ -773,9 +773,9 @@ PrDec16Tens:
 .pc = $8000 "Schreck Block 2"  // original 8000-8148  helper routines, should be made relocatable but it is currently initializing the variable table at $8000
 	#import "Engine/block2-5.asm"
 .pc = * "Initialization Routines"
-	#import "init-4.asm" 
+	#import "init-5.asm" 
 .pc = * "Option/Attract Routines"
-	#import "attract-screens-3.asm" 
+	#import "attract-screens-6.asm" 
 .pc = * "Commodore Helpers"
 	#import "helpers-2.asm"
 //........................................................................................................................................................
@@ -784,28 +784,29 @@ PrDec16Tens:
 	.fill $20, [$ac+i, $ac+i]
 // this table implements the transformation from x,y tile coordinates to map lsb = $80*(y%2) + x,  msb = $ac + floor(y/2)	
 //........................................................................................................................................................
-.pc = $9400 "Sound effect and music players"
-	#import "Sound/play-voice1.asm"
-	#import "Sound/play-voice2.asm"
-	#import "Sound/play-voice3.asm"	
-	#import "Sound/sound-manager-3.asm"	//macros for inlining
-	#import "Sound/tune-player.asm"
+.pc = $9400 "Sound effect play voice 1 handler"
+	#import "Sound/play-voice1-3.asm"		// now stabilized without cia
+.pc = $9500 "Play voices 2,3; manage sounds and tunes"	// do this as you can afford to not let anything timing critical cross a page boundary
+	#import "Sound/play-voice2-3.asm"		// now stabilized without cia
+	#import "Sound/play-voice3-2.asm"		// macro
+	#import "Sound/sound-manager-6.asm"		// macros for inlining
+	#import "Sound/tune-player-2.asm"
 //........................................................................................................................................................
 .pc = * "IRQ Handlers (Option/Attract Screens)"
-	#import "IRQ-Handlers/attract-irqs-3.asm"
+	#import "IRQ-Handlers/attract-irqs-4.asm"
 //........................................................................................................................................................
 .pc = $a001 "IRQ Handlers (Gameplay Kernel)"		// +1 because stupid emulator
-	#import "IRQ-Handlers/viewport-irqs-32.asm"
+	#import "IRQ-Handlers/viewport-irqs-38.asm"
 	#import "update-viewports-14.asm"
 //........................................................................................................................................................
-.label mapRam = $ac00
+.label mapRam = loader.Map	//$ac00
 	
 .pc = mapRam "-$cbff Map Data dummy fill"
 //	.fill $2000, 00	
 
 //........................................................................................................................................................
-	.pc = $e000 "-$f383 Sound effect wavetables and tune notes dummy fill"
-//	.fill $1383, 00	
+	.pc = loader.Sounds "-$f171 Sound effect wavetables and tune notes dummy fill" // $e000 - end found from sound-fx-wavetables loaded separately
+//	.fill $1171, 00	
 
 //_________________________________________________________________________________________________________________________________________________________
 //_________________________________________________________________________________________________________________________________________________________

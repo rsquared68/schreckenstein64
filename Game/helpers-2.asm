@@ -13,19 +13,19 @@
 
 // --------------------------------------------------------------------------------------------------
 CLEAR_SCREEN_1:
-	// clear screen 1 (screen 2 has stuff in it that must be preserved)
-	ldx #250
-	lda #$20							
+		// clear screen 1 (screen 2 has stuff in it that must be preserved)
+		ldx #250
+		lda #$20							
 !lp:			
-	sta screenRam1-1,x	
-	sta screenRam1-1+250,x		
-	sta screenRam1-1+500,x
-	sta screenRam1-1+750,x
+		sta screenRam1-1,x	
+		sta screenRam1-1+250,x		
+		sta screenRam1-1+500,x
+		sta screenRam1-1+750,x
+			
+		dex
+		bne !lp-
 		
-	dex
-	bne !lp-
-	
-	rts
+		rts
 
 // --------------------------------------------------------------------------------------------------
 /*   GET_JOYSTICK no longer exists as it's been inlined
@@ -44,62 +44,60 @@ WAIT_TRIGGER:
 
 // --------------------------------------------------------------------------------------------------	
 SILENCE_SID:
-	// turn sound off
-	lda #0				// turn off SID volume
-	sta SIGVOL
+		// turn sound off
+		lda #0				// turn off SID volume
+		sta SIGVOL
 
 RESTART_WAVES_ENVELOPES:		//alternate entry point
-	// gates and waves off
-	sta VCREG3
-	sta VCREG2
-	sta VCREG1
-	
-	// restart config
-	lda #$0f
-	sta ATDCY1
-	sta ATDCY2
-	sta ATDCY3
-	lda #$00
-	sta SUREL1
-	sta SUREL2
-	sta SUREL3
- 	
- 	rts
-
+		// gates and waves off
+		sta VCREG3
+		sta VCREG2
+		sta VCREG1
+		
+		// restart config
+		lda #$0f
+		sta ATDCY1
+		sta ATDCY2
+		sta ATDCY3
+		lda #$00
+		sta SUREL1
+		sta SUREL2
+		sta SUREL3
+	 	
+	 	rts
 
 // --------------------------------------------------------------------------------------------------
 RETURN_OBJECT_TO_MAP: //rjr code
-	// take object from player inventory and return it to the map
-	// player index in X
-
-	//ldx PlayerIndex_zp
-	lda PlayerInventory,x		// if player has nothing, don't do it
-	beq !EXIT+
-
-	lda #$00                                   
-	sta PlayerInventory,x		// clear player inventory
-		                                                       
-	//lda #$00                     
-	clc           			// get pointer to taskbar tile
-	adc StatusBarTaskPtr,x       
-	sta map11_zpw                   
-	       
-	txa                          	// add player # to msb    
-	adc #$7c                    	// player 1 should write to 7c00+2, player 2 7db8+2
-	//adc #$00                     
-	sta map11_zpw+1
-	                        
-	lda #$00                     
-	ldy #$00                     
-	sta (map11_zpw),y	  	// clear taskbar tile
+		// take object from player inventory and return it to the map
+		// player index in X
 	
-	lda functionalTileTable+1       // getting the tile type for the level the first entry 0 = blank space/nothing
-	sta $a0                      
-	//lda $a0                      
-	jsr PLOT_1_ON_FLOOR
+		//ldx PlayerIndex_zp
+		lda PlayerInventory,x		// if player has nothing, don't do it
+		beq !EXIT+
 	
-!EXIT:	rts 
+		lda #$00                                   
+		sta PlayerInventory,x		// clear player inventory
+			                                                       
+		//lda #$00                     
+		clc           			// get pointer to taskbar tile
+		adc StatusBarTaskPtr,x       
+		sta map11_zpw                   
+		       
+		txa                          	// add player # to msb    
+		adc #$7c                    	// player 1 should write to 7c00+2, player 2 7db8+2
+		//adc #$00                     
+		sta map11_zpw+1
+		                        
+		lda #$00                     
+		ldy #$00                     
+		sta (map11_zpw),y	  	// clear taskbar tile
+		
+		lda functionalTileTable+1       // getting the tile type for the level the first entry 0 = blank space/nothing
+		sta $a0                      
+		//lda $a0                      
+		jsr PLOT_1_ON_FLOOR
 	
+!EXIT:		rts 
 
 // --------------------------------------------------------------------------------------------------
 COPY_SCORES:	
@@ -126,7 +124,6 @@ COPY_SCORES:
 		
 		rts
 		
-
 // --------------------------------------------------------------------------------------------------
 UPDATE_HIGHSCORE:
 		// update highscore and copy into the score display screen buffer
@@ -177,9 +174,8 @@ UPDATE_HIGHSCORE:
 				
 		dey
 		bne !lp-
-		
-		
+				
 		rts
 		
-	
+
 		
