@@ -13,7 +13,7 @@
 				in the root path of this package.
 
 				The loader code is more or less taken verbatim from Covert Bitops Loadersystem Copyright (c) 2002-2023
-				Lasse Öörni https://github.com/cadaver/c64loader and is incorporated here under the terms of the license
+				Lasse Ã–Ã¶rni https://github.com/cadaver/c64loader and is incorporated here under the terms of the license
 				agreement included in the /loader path of this package.
 
 				Kick Assembler v5.x  
@@ -35,7 +35,7 @@
 
 	2025-01-08	schreck-37	DEPRECATED	optimize main service loop for speed
 
-	2025-01-10	shreck64-100%	BASELINE	Final (?) release
+	2025-01-10	schreck64-100%	BASELINE	Final (?) release
 
 	
 //                .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
